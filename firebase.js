@@ -3,7 +3,7 @@ const admin = require("firebase-admin");
 const serviceAccountBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
 
 if (!serviceAccountBase64) {
-  throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_BASE64 in environment");
+  throw new Error("❌ FIREBASE_SERVICE_ACCOUNT_BASE64 is missing.");
 }
 
 const serviceAccount = JSON.parse(
