@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const app = express();
-const usersRef = require('./firebase'); // Firebase users collection
 
 const VERIFY_TOKEN = "your_custom_token";
 
@@ -37,46 +36,7 @@ app.post('/webhook', async (req, res) => {
     const userMessage = message.text?.body || "No text";
 
     try {
-      const userDoc = await usersRef.doc(from).get();
-      const firstTime = !userDoc.exists || !userDoc.data().greeted;
-
-      // Check for "reset" command
-      if (userMessage.toLowerCase().trim() === "reset") {
-        await usersRef.doc(from).delete();
-        await axios.post(
-          `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-          {
-            messaging_product: "whatsapp",
-            to: from,
-            text: { body: "✅ Your session has been reset. You can start fresh now." }
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-        return res.sendStatus(200);
-      }
-
-      if (firstTime) {
-        await usersRef.doc(from).set({ greeted: true }, { merge: true });
-      }
-
-      // Prepare system prompt based on greeting and previous conversation
-      let previousLogs = [];
-      const logsSnapshot = await usersRef.doc(from).collection("logs").orderBy("timestamp", "desc").limit(5).get();
-      logsSnapshot.forEach(doc => previousLogs.unshift(doc.data()));
-
-      const history = previousLogs.map(log => ({
-        role: log.from,
-        content: log.message
-      }));
-
-      const systemPrompt = firstTime
-        ? `You are a warm, helpful WhatsApp assistant for Fred's Computers. Greet the user once, then offer helpful replies or suggest templates.`
-        : `You are an assistant for Fred's Computers. Continue the conversation naturally. Avoid repeating greetings.`
+      const systemPrompt = `You are a WhatsApp assistant for Fred's Computers. Be natural and helpful. If needed, suggest a WhatsApp template using JSON format. Avoid repeating greetings.`;
 
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -84,7 +44,6 @@ app.post('/webhook', async (req, res) => {
           model: "mistralai/mistral-7b-instruct",
           messages: [
             { role: "system", content: systemPrompt },
-            ...history,
             { role: "user", content: userMessage }
           ]
         },
@@ -99,20 +58,7 @@ app.post('/webhook', async (req, res) => {
       const aiMessage = aiResponse.data.choices[0].message.content.trim();
       console.log("🤖 AI responded:", aiMessage);
 
-      // Save user + AI messages to Firebase
-      await usersRef.doc(from).collection("logs").add({
-        from: "user",
-        message: userMessage,
-        timestamp: new Date()
-      });
-
-      await usersRef.doc(from).collection("logs").add({
-        from: "assistant",
-        message: aiMessage,
-        timestamp: new Date()
-      });
-
-      // Try to parse as a template
+      // Parse for template
       let parsed = null;
       try {
         const maybeJSON = JSON.parse(aiMessage);
