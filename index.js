@@ -40,25 +40,6 @@ app.post('/webhook', async (req, res) => {
     console.log(`📩 Incoming message from ${from}:`, userMessage);
 
     try {
-      // Test template bypass - remove in production
-      if (userMessage.toLowerCase().trim() === "test template") {
-        const testTemplate = {
-          type: "template",
-          template_name: "welcome_message", // Must match exactly in WhatsApp dashboard
-          language_code: "en",
-          components: [
-            {
-              type: "body",
-              parameters: [
-                { type: "text", text: "Fred" }
-              ]
-            }
-          ]
-        };
-        await sendTemplate(from, testTemplate);
-        return res.sendStatus(200);
-      }
-
       const userDoc = await usersRef.doc(from).get();
       const firstTime = !userDoc.exists || !userDoc.data().greeted;
 
@@ -82,69 +63,94 @@ app.post('/webhook', async (req, res) => {
         content: log.message
       }));
 
-      const systemPrompt = `You are Linda, Fred's assistant. Respond ONLY in valid JSON format using these structures:
+      const systemPrompt = firstTime
+        ? `You are Linda, Fred's smart and witty personal assistant at Fred's Computers. Greet the user warmly (only once) and assist with tech issues like printing, browsing, or general computer help. Keep responses concise — aim for under 250 characters unless more detail is needed (max 500).
+Let users know they can shop for Hats, Canon Cameras, and Beanies from Fred's online store: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. If they ask for different products, take note and say you'll share it with Fred.
+For anything too complex, direct users to contact Fred at +25470378935 or juniorokovagng@gmail.com. Keep the tone friendly and professional. Be quick, smart, and to the point.`
+        : `You're Linda, Fred's assistant. Keep helping with tech and computer-related issues. Be concise (under 250 characters preferred, up to 500 max if necessary).
+Mention Fred's online store if users ask about products — Hats, Canon Cameras, and Beanies: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. Save user interests for future suggestions.
+If anything is beyond your scope, tell the user to reach out to Fred at +25470378935 or juniorokovagng@gmail.com. Avoid greetings and repeat info. Be sharp, polite, and helpful.`;
 
-1. For WhatsApp templates (MUST use exact structure):
-{
-  "type": "template",
-  "template_name": "approved_template_name_from_whatsapp",
-  "language_code": "en",
-  "components": [
-    {
-      "type": "body",
-      "parameters": [
-        { "type": "text", "text": "value1" }
-      ]
-    }
-  ]
-}
-⚠️ template_name MUST match exactly what's approved in WhatsApp dashboard
-⚠️ ALWAYS include language_code and components
-
-2. For interactive lists:
-{
-  "type": "interactive_list",
-  "header": "Header text",
-  "body": "Main message",
-  "sections": [
-    {
-      "title": "Section title",
-      "rows": [
-        {
-          "id": "option1_id",
-          "title": "Option 1",
-          "description": "Description"
+      // Check if user asked about hiking
+      if (userMessage.toLowerCase().includes('hiking')) {
+        // First send a greeting if it's first time
+        if (firstTime) {
+          await sendText(from, "Hello! I'm Linda, Fred's assistant. I see you're interested in hiking!");
         }
-      ]
-    }
-  ]
-}
-
-3. For locations:
-{
-  "type": "location",
-  "longitude": 36.8219,
-  "latitude": -1.2921,
-  "name": "Location name"
-}
-
-⚠️ DO NOT respond in plain text. ALWAYS use JSON.
-⚠️ For templates, ONLY use pre-approved template names.
-⚠️ If unsure, respond with simple text inside JSON: {"type":"text","content":"message"}`;
+        
+        // Then send the interactive list
+        await sendInteractiveList(from, {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: from,
+          type: "interactive",
+          interactive: {
+            type: "list",
+            header: {
+              type: "text",
+              text: "🌍 Trip Planner"
+            },
+            body: {
+              text: "Hello! Ready to explore? 🌴✨\n\nSelect a trip package below to view details and begin your adventure."
+            },
+            footer: {
+              text: "Powered by WanderNow ✈️"
+            },
+            action: {
+              button: "Choose a Package",
+              sections: [
+                {
+                  title: "🌅 Popular Getaways",
+                  rows: [
+                    {
+                      id: "coast_trip",
+                      title: "Mombasa Beach Escape",
+                      description: "3 Days, 2 Nights | All-inclusive | Starts at KES 15,000"
+                    },
+                    {
+                      id: "naivasha_trip",
+                      title: "Naivasha Nature Retreat",
+                      description: "2 Days, 1 Night | Boat ride included | From KES 8,500"
+                    }
+                  ]
+                },
+                {
+                  title: "🚌 Upcoming Group Trips",
+                  rows: [
+                    {
+                      id: "mtkenya_hike",
+                      title: "Mt. Kenya Hiking Tour",
+                      description: "4 Days | Group adventure | From KES 22,000"
+                    },
+                    {
+                      id: "arusha_safari",
+                      title: "Arusha Safari (TZ)",
+                      description: "5 Days | Cross-border | KES 35,000 all in"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        });
+        
+        // Save to Firestore
+        const logRef = usersRef.doc(from).collection("logs");
+        await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
+        await logRef.add({ from: "assistant", message: "Sent hiking trip options", timestamp: new Date() });
+        
+        return res.sendStatus(200);
+      }
 
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
         {
-          model: "mistralai/mistral-7b-instruct", // Consider gpt-4-turbo for better JSON compliance
+          model: "mistralai/mistral-7b-instruct",
           messages: [
             { role: "system", content: systemPrompt },
             ...history,
-            { 
-              role: "user", 
-              content: `${userMessage}\n\nRespond in strict JSON format using one of the specified structures.` 
-            }
-          ],
-          response_format: { type: "json_object" }
+            { role: "user", content: userMessage }
+          ]
         },
         {
           headers: {
@@ -155,61 +161,38 @@ app.post('/webhook', async (req, res) => {
       );
 
       const aiMessage = aiResponse.data.choices[0].message.content.trim();
-      console.log("🤖 Raw AI response:", aiMessage);
+      console.log("🤖 AI responded:", aiMessage);
 
       // Save to Firestore
       const logRef = usersRef.doc(from).collection("logs");
       await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
       await logRef.add({ from: "assistant", message: aiMessage, timestamp: new Date() });
 
-      // Parse and validate response
+      // Try parsing as JSON template
       let parsed;
       try {
-        parsed = JSON.parse(aiMessage);
-        console.log("🧪 Parsed AI message:", parsed);
+        const maybeJSON = JSON.parse(aiMessage);
+        if (maybeJSON?.action === "send_template") parsed = maybeJSON;
       } catch (e) {
-        console.warn("⚠️ Failed to parse AI response as JSON");
-        await sendText(from, "Sorry, I encountered an error. Please try again.");
-        return res.sendStatus(200);
+        parsed = null;
       }
 
-      // Handle different response types
-      if (!parsed.type) {
-        console.warn("⚠️ AI response missing 'type' field");
-        await sendText(from, "Sorry, I had trouble formatting that response.");
-        return res.sendStatus(200);
-      }
-
-      switch (parsed.type) {
-        case "template":
-          if (!parsed.template_name || !parsed.language_code || !parsed.components) {
-            console.warn("⚠️ Invalid template structure - missing required fields");
-            await sendText(from, "Sorry, I couldn't format that properly. Please try again.");
-            break;
-          }
-          await sendTemplate(from, parsed);
-          break;
-        
-        case "interactive_list":
-          await sendInteractiveList(from, parsed);
-          break;
-        
-        case "location":
-          await sendLocation(from, parsed);
-          break;
-        
-        case "text":
-          await sendText(from, parsed.content || "No message content");
-          break;
-        
-        default:
-          console.warn("⚠️ Unknown response type:", parsed.type);
-          await sendText(from, "Sorry, I couldn't process that request.");
+      if (parsed?.template_name) {
+        await sendTemplate(from, parsed);
+      } else if (/\.(jpg|jpeg|png|gif)/.test(aiMessage)) {
+        const imageUrl = aiMessage.match(/https?:\/\/[^\s]+/)[0];
+        const caption = aiMessage.replace(imageUrl, "").trim();
+        await sendImage(from, imageUrl, caption);
+      } else {
+        await sendText(from, aiMessage);
       }
 
     } catch (err) {
-      console.error("❌ Error processing message:", err);
-      await sendText(from, "Sorry, I encountered an error. Please try again later.");
+      if (err.response?.data) {
+        console.error("❌ API Error:", err.response.data);
+      } else {
+        console.error("❌ Internal Error:", err.message);
+      }
     }
   }
 
@@ -221,7 +204,7 @@ app.post('/webhook', async (req, res) => {
 async function sendText(to, message) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    await axios.post(url, {
+    const response = await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       text: { body: message }
@@ -237,18 +220,37 @@ async function sendText(to, message) {
   }
 }
 
-async function sendTemplate(to, data) {
+async function sendImage(to, link, caption = "") {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
-  
   try {
-    await axios.post(url, {
+    const response = await axios.post(url, {
+      messaging_product: "whatsapp",
+      to,
+      type: "image",
+      image: { link, caption }
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+    console.log("🖼️ Sent image to", to);
+  } catch (err) {
+    console.error("❌ Failed to send image:", err.response?.data || err.message);
+  }
+}
+
+async function sendTemplate(to, parsed) {
+  const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  try {
+    const response = await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       type: "template",
       template: {
-        name: data.template_name,
-        language: { code: data.language_code },
-        components: data.components
+        name: parsed.template_name,
+        language: { code: parsed.language_code || "en" },
+        ...(parsed.components && { components: parsed.components })
       }
     }, {
       headers: {
@@ -256,46 +258,16 @@ async function sendTemplate(to, data) {
         "Content-Type": "application/json"
       }
     });
-    console.log("📤 Sent template:", data.template_name);
+    console.log("📤 Sent template:", parsed.template_name);
   } catch (err) {
     console.error("❌ Failed to send template:", err.response?.data || err.message);
-    // Fallback to text with template details
-    const bodyText = data.components.find(c => c.type === "body")?.parameters?.map(p => p.text).join(" ") || "";
-    await sendText(to, `[Template: ${data.template_name}] ${bodyText}`);
   }
 }
 
-async function sendInteractiveList(to, data) {
+async function sendInteractiveList(to, listData) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    await axios.post(url, {
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "list",
-        header: {
-          type: "text",
-          text: data.header || "Options"
-        },
-        body: {
-          text: data.body || "Please select an option:"
-        },
-        ...(data.footer && { footer: { text: data.footer } }),
-        action: {
-          button: data.button || "Choose Option",
-          sections: data.sections.map(section => ({
-            title: section.title,
-            rows: section.rows.map(row => ({
-              id: row.id,
-              title: row.title,
-              description: row.description || ""
-            }))
-          }))
-        }
-      }
-    }, {
+    const response = await axios.post(url, listData, {
       headers: {
         Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
         "Content-Type": "application/json"
@@ -304,37 +276,6 @@ async function sendInteractiveList(to, data) {
     console.log("📋 Sent interactive list to", to);
   } catch (err) {
     console.error("❌ Failed to send interactive list:", err.response?.data || err.message);
-    // Fallback to text with options
-    const optionsText = data.sections.map(section => 
-      `${section.title}:\n${section.rows.map(row => `- ${row.title}: ${row.description}`).join('\n')}`
-    ).join('\n\n');
-    await sendText(to, `${data.body}\n\n${optionsText}`);
-  }
-}
-
-async function sendLocation(to, data) {
-  const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
-  try {
-    await axios.post(url, {
-      messaging_product: "whatsapp",
-      to,
-      type: "location",
-      location: {
-        longitude: data.longitude,
-        latitude: data.latitude,
-        name: data.name,
-        ...(data.address && { address: data.address })
-      }
-    }, {
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
-    console.log("📍 Sent location to", to);
-  } catch (err) {
-    console.error("❌ Failed to send location:", err.response?.data || err.message);
-    await sendText(to, `Location: ${data.name}\nAddress: ${data.address || 'Not provided'}`);
   }
 }
 
