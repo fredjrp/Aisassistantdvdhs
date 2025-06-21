@@ -66,19 +66,51 @@ app.post('/webhook', async (req, res) => {
       const systemPrompt = firstTime
         ? `You are Linda, Fred's smart and witty personal assistant at Fred's Computers. Greet the user warmly (only once) and assist with tech issues like printing, browsing, or general computer help. Keep responses concise — aim for under 250 characters unless more detail is needed (max 500).
 Let users know they can shop for Hats, Canon Cameras, and Beanies from Fred's online store: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. If they ask for different products, take note and say you'll share it with Fred.
-For anything too complex, direct users to contact Fred at +25470378935 or juniorokovagng@gmail.com. Keep the tone friendly and professional. Be quick, smart, and to the point.`
+For anything too complex, direct users to contact Fred at +25470378935 or juniorokovagng@gmail.com. Keep the tone friendly and professional. Be quick, smart, and to the point. Use maximum 2 emojis per message.`
         : `You're Linda, Fred's assistant. Keep helping with tech and computer-related issues. Be concise (under 250 characters preferred, up to 500 max if necessary).
 Mention Fred's online store if users ask about products — Hats, Canon Cameras, and Beanies: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. Save user interests for future suggestions.
-If anything is beyond your scope, tell the user to reach out to Fred at +25470378935 or juniorokovagng@gmail.com. Avoid greetings and repeat info. Be sharp, polite, and helpful.`;
+If anything is beyond your scope, tell the user to reach out to Fred at +25470378935 or juniorokovagng@gmail.com. Avoid greetings and repeat info. Be sharp, polite, and helpful. Use maximum 2 emojis per message.`;
 
-      // Check if user asked about hiking
-      if (userMessage.toLowerCase().includes('hiking')) {
-        // First send a greeting if it's first time
-        if (firstTime) {
-          await sendText(from, "Hello! I'm Linda, Fred's assistant. I see you're interested in hiking!");
+      // Check if AI should respond with an interactive list
+      const shouldSendInteractiveList = userMessage.toLowerCase().includes('hiking') || 
+                                      userMessage.toLowerCase().includes('trip') ||
+                                      userMessage.toLowerCase().includes('travel');
+
+      if (shouldSendInteractiveList) {
+        // Get AI response for the header and body
+        const aiResponse = await axios.post(
+          "https://openrouter.ai/api/v1/chat/completions",
+          {
+            model: "mistralai/mistral-7b-instruct",
+            messages: [
+              { role: "system", content: `Generate a short header (max 3 words) and body text (1 sentence) for a travel options list based on: "${userMessage}". Use max 2 emojis total. Respond ONLY in this JSON format: {"header":"Header text","body":"Body text"}` },
+              ...history,
+              { role: "user", content: userMessage }
+            ],
+            response_format: { type: "json_object" }
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        const aiMessage = aiResponse.data.choices[0].message.content.trim();
+        console.log("🤖 AI responded:", aiMessage);
+
+        let listConfig;
+        try {
+          listConfig = JSON.parse(aiMessage);
+        } catch (e) {
+          listConfig = {
+            header: "Travel Options",
+            body: "Here are some great travel options for you!"
+          };
         }
-        
-        // Then send the interactive list
+
+        // Send the interactive list with AI-generated header/body
         await sendInteractiveList(from, {
           messaging_product: "whatsapp",
           recipient_type: "individual",
@@ -88,10 +120,10 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
             type: "list",
             header: {
               type: "text",
-              text: "🌍 Trip Planner"
+              text: listConfig.header || "🌍 Trip Planner"
             },
             body: {
-              text: "Hello! Ready to explore? 🌴✨\n\nSelect a trip package below to view details and begin your adventure."
+              text: listConfig.body || "Hello! Ready to explore? Select a trip package below."
             },
             footer: {
               text: "Powered by WanderNow ✈️"
@@ -133,15 +165,20 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
             }
           }
         });
-        
+
         // Save to Firestore
         const logRef = usersRef.doc(from).collection("logs");
         await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
-        await logRef.add({ from: "assistant", message: "Sent hiking trip options", timestamp: new Date() });
+        await logRef.add({ 
+          from: "assistant", 
+          message: `Sent interactive list: ${listConfig.header} - ${listConfig.body}`,
+          timestamp: new Date() 
+        });
         
         return res.sendStatus(200);
       }
 
+      // Regular text response
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
         {
