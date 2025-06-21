@@ -40,6 +40,25 @@ app.post('/webhook', async (req, res) => {
     console.log(`📩 Incoming message from ${from}:`, userMessage);
 
     try {
+      // Test template bypass - remove in production
+      if (userMessage.toLowerCase().trim() === "test template") {
+        const testTemplate = {
+          type: "template",
+          template_name: "welcome_message", // Must match exactly in WhatsApp dashboard
+          language_code: "en",
+          components: [
+            {
+              type: "body",
+              parameters: [
+                { type: "text", text: "Fred" }
+              ]
+            }
+          ]
+        };
+        await sendTemplate(from, testTemplate);
+        return res.sendStatus(200);
+      }
+
       const userDoc = await usersRef.doc(from).get();
       const firstTime = !userDoc.exists || !userDoc.data().greeted;
 
@@ -63,10 +82,9 @@ app.post('/webhook', async (req, res) => {
         content: log.message
       }));
 
-      const systemPrompt = `You are Linda, Fred's smart and witty personal assistant at Fred's Computers. Keep responses concise (under 250 characters preferred, up to 500 max if needed).
+      const systemPrompt = `You are Linda, Fred's assistant. Respond ONLY in valid JSON format using these structures:
 
-SPECIAL RESPONSE FORMATS:
-1. For WhatsApp templates, use this exact JSON structure:
+1. For WhatsApp templates (MUST use exact structure):
 {
   "type": "template",
   "template_name": "approved_template_name_from_whatsapp",
@@ -75,41 +93,19 @@ SPECIAL RESPONSE FORMATS:
     {
       "type": "body",
       "parameters": [
-        { "type": "text", "text": "value1" },
-        { "type": "text", "text": "value2" }
-      ]
-    },
-    {
-      "type": "button",
-      "sub_type": "quick_reply",
-      "index": 0,
-      "parameters": [
-        { "type": "payload", "payload": "button1_payload" }
+        { "type": "text", "text": "value1" }
       ]
     }
   ]
 }
-Example: If user asks for a welcome message, respond with:
-{
-  "type": "template",
-  "template_name": "welcome_message",
-  "language_code": "en",
-  "components": [
-    {
-      "type": "body",
-      "parameters": [
-        { "type": "text", "text": "Fred" }
-      ]
-    }
-  ]
-}
+⚠️ template_name MUST match exactly what's approved in WhatsApp dashboard
+⚠️ ALWAYS include language_code and components
 
-2. For multiple options, use:
+2. For interactive lists:
 {
   "type": "interactive_list",
   "header": "Header text",
   "body": "Main message",
-  "footer": "Footer text (optional)",
   "sections": [
     {
       "title": "Section title",
@@ -124,32 +120,29 @@ Example: If user asks for a welcome message, respond with:
   ]
 }
 
-3. For locations, use:
+3. For locations:
 {
   "type": "location",
   "longitude": 36.8219,
   "latitude": -1.2921,
-  "name": "Location name",
-  "address": "Address (optional)"
+  "name": "Location name"
 }
 
-4. For images, include direct URL ending with .jpg/.png/.gif
-
-OTHER INSTRUCTIONS:
-- For tech support, be concise and helpful
-- Mention Fred's store for products: https://www.kilimall.co.ke/store/100007946
-- For complex issues, direct to Fred at +25470378935
-- First-time users get a warm greeting
-- Use templates only for pre-approved message types`;
+⚠️ DO NOT respond in plain text. ALWAYS use JSON.
+⚠️ For templates, ONLY use pre-approved template names.
+⚠️ If unsure, respond with simple text inside JSON: {"type":"text","content":"message"}`;
 
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
         {
-          model: "mistralai/mistral-7b-instruct",
+          model: "mistralai/mistral-7b-instruct", // Consider gpt-4-turbo for better JSON compliance
           messages: [
             { role: "system", content: systemPrompt },
             ...history,
-            { role: "user", content: userMessage }
+            { 
+              role: "user", 
+              content: `${userMessage}\n\nRespond in strict JSON format using one of the specified structures.` 
+            }
           ],
           response_format: { type: "json_object" }
         },
@@ -162,52 +155,61 @@ OTHER INSTRUCTIONS:
       );
 
       const aiMessage = aiResponse.data.choices[0].message.content.trim();
-      console.log("🤖 AI responded:", aiMessage);
+      console.log("🤖 Raw AI response:", aiMessage);
 
       // Save to Firestore
       const logRef = usersRef.doc(from).collection("logs");
       await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
       await logRef.add({ from: "assistant", message: aiMessage, timestamp: new Date() });
 
-      // Try parsing as JSON
+      // Parse and validate response
       let parsed;
       try {
         parsed = JSON.parse(aiMessage);
+        console.log("🧪 Parsed AI message:", parsed);
       } catch (e) {
-        parsed = null;
+        console.warn("⚠️ Failed to parse AI response as JSON");
+        await sendText(from, "Sorry, I encountered an error. Please try again.");
+        return res.sendStatus(200);
       }
 
-      if (parsed) {
-        if (parsed.type === "interactive_list") {
-          await sendInteractiveList(from, parsed);
-        } else if (parsed.type === "location") {
-          await sendLocation(from, parsed);
-        } else if (parsed.type === "template") {
-          // Validate template structure before sending
-          if (!parsed.template_name || !parsed.language_code) {
+      // Handle different response types
+      if (!parsed.type) {
+        console.warn("⚠️ AI response missing 'type' field");
+        await sendText(from, "Sorry, I had trouble formatting that response.");
+        return res.sendStatus(200);
+      }
+
+      switch (parsed.type) {
+        case "template":
+          if (!parsed.template_name || !parsed.language_code || !parsed.components) {
             console.warn("⚠️ Invalid template structure - missing required fields");
-            await sendText(from, "Sorry, I had trouble formatting that response. Please try again.");
-          } else {
-            await sendTemplate(from, parsed);
+            await sendText(from, "Sorry, I couldn't format that properly. Please try again.");
+            break;
           }
-        } else {
-          await sendText(from, aiMessage);
-        }
-      } else if (/\.(jpg|jpeg|png|gif)/.test(aiMessage)) {
-        const imageUrl = aiMessage.match(/https?:\/\/[^\s]+/)[0];
-        const caption = aiMessage.replace(imageUrl, "").trim();
-        await sendImage(from, imageUrl, caption);
-      } else {
-        await sendText(from, aiMessage);
+          await sendTemplate(from, parsed);
+          break;
+        
+        case "interactive_list":
+          await sendInteractiveList(from, parsed);
+          break;
+        
+        case "location":
+          await sendLocation(from, parsed);
+          break;
+        
+        case "text":
+          await sendText(from, parsed.content || "No message content");
+          break;
+        
+        default:
+          console.warn("⚠️ Unknown response type:", parsed.type);
+          await sendText(from, "Sorry, I couldn't process that request.");
       }
 
     } catch (err) {
-      if (err.response?.data) {
-        console.error("❌ API Error:", err.response.data);
-        await sendText(from, "Sorry, I encountered an error. Please try again later.");
-      } else {
-        console.error("❌ Internal Error:", err.message);
-      }
+      console.error("❌ Error processing message:", err);
+      await sendText(from, "Sorry, I encountered an error. Please try again later.");
     }
   }
 
@@ -219,7 +221,7 @@ OTHER INSTRUCTIONS:
 async function sendText(to, message) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       text: { body: message }
@@ -235,45 +237,18 @@ async function sendText(to, message) {
   }
 }
 
-async function sendImage(to, link, caption = "") {
-  const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
-  try {
-    const response = await axios.post(url, {
-      messaging_product: "whatsapp",
-      to,
-      type: "image",
-      image: { link, caption }
-    }, {
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
-    console.log("🖼️ Sent image to", to);
-  } catch (err) {
-    console.error("❌ Failed to send image:", err.response?.data || err.message);
-  }
-}
-
 async function sendTemplate(to, data) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   
-  // Fallback template if AI response is incomplete
-  const templateData = {
-    template_name: data.template_name || "welcome_message",
-    language_code: data.language_code || "en",
-    components: data.components || []
-  };
-
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       type: "template",
       template: {
-        name: templateData.template_name,
-        language: { code: templateData.language_code },
-        components: templateData.components
+        name: data.template_name,
+        language: { code: data.language_code },
+        components: data.components
       }
     }, {
       headers: {
@@ -281,18 +256,19 @@ async function sendTemplate(to, data) {
         "Content-Type": "application/json"
       }
     });
-    console.log("📤 Sent template:", templateData.template_name);
+    console.log("📤 Sent template:", data.template_name);
   } catch (err) {
     console.error("❌ Failed to send template:", err.response?.data || err.message);
-    // Fallback to text if template fails
-    await sendText(to, "Here's what I wanted to share: " + JSON.stringify(data.components));
+    // Fallback to text with template details
+    const bodyText = data.components.find(c => c.type === "body")?.parameters?.map(p => p.text).join(" ") || "";
+    await sendText(to, `[Template: ${data.template_name}] ${bodyText}`);
   }
 }
 
 async function sendInteractiveList(to, data) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to,
@@ -339,7 +315,7 @@ async function sendInteractiveList(to, data) {
 async function sendLocation(to, data) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       type: "location",
