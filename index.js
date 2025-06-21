@@ -63,55 +63,84 @@ app.post('/webhook', async (req, res) => {
         content: log.message
       }));
 
-      const systemPrompt = firstTime
-        ? `You are Linda, Fred's smart and witty personal assistant at Fred's Computers. Greet the user warmly (only once) and assist with tech issues like printing, browsing, or general computer help. Keep responses concise — aim for under 250 characters unless more detail is needed (max 500).
-Let users know they can shop for Hats, Canon Cameras, and Beanies from Fred's online store: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. If they ask for different products, take note and say you'll share it with Fred.
-For anything too complex, direct users to contact Fred at +25470378935 or juniorokovagng@gmail.com. Keep the tone friendly and professional. Be quick, smart, and to the point.
+      const systemPrompt = `You are Linda, Fred's smart and witty personal assistant at Fred's Computers. Keep responses concise (under 250 characters preferred, up to 500 max if needed).
 
-SPECIAL FORMATS:
-1. If you need to present multiple options (like product choices or service packages), respond with JSON in this format:
+SPECIAL RESPONSE FORMATS:
+1. For WhatsApp templates, use this exact JSON structure:
+{
+  "type": "template",
+  "template_name": "approved_template_name_from_whatsapp",
+  "language_code": "en",
+  "components": [
+    {
+      "type": "body",
+      "parameters": [
+        { "type": "text", "text": "value1" },
+        { "type": "text", "text": "value2" }
+      ]
+    },
+    {
+      "type": "button",
+      "sub_type": "quick_reply",
+      "index": 0,
+      "parameters": [
+        { "type": "payload", "payload": "button1_payload" }
+      ]
+    }
+  ]
+}
+Example: If user asks for a welcome message, respond with:
+{
+  "type": "template",
+  "template_name": "welcome_message",
+  "language_code": "en",
+  "components": [
+    {
+      "type": "body",
+      "parameters": [
+        { "type": "text", "text": "Fred" }
+      ]
+    }
+  ]
+}
+
+2. For multiple options, use:
 {
   "type": "interactive_list",
   "header": "Header text",
-  "body": "Main message text",
+  "body": "Main message",
   "footer": "Footer text (optional)",
   "sections": [
     {
-      "title": "Section 1 title",
+      "title": "Section title",
       "rows": [
         {
-          "id": "unique_id_1",
+          "id": "option1_id",
           "title": "Option 1",
-          "description": "Description of option 1"
-        },
-        {
-          "id": "unique_id_2",
-          "title": "Option 2",
-          "description": "Description of option 2"
+          "description": "Description"
         }
       ]
     }
   ]
 }
 
-2. If you need to share a location, respond with JSON in this format:
+3. For locations, use:
 {
   "type": "location",
-  "longitude": 36.821946,
-  "latitude": -1.292066,
+  "longitude": 36.8219,
+  "latitude": -1.2921,
   "name": "Location name",
-  "address": "Physical address (optional)"
+  "address": "Address (optional)"
 }
 
-Otherwise, respond with normal text.`
-        : `You're Linda, Fred's assistant. Keep helping with tech and computer-related issues. Be concise (under 250 characters preferred, up to 500 max if necessary).
-Mention Fred's online store if users ask about products — Hats, Canon Cameras, and Beanies: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. Save user interests for future suggestions.
-If anything is beyond your scope, tell the user to reach out to Fred at +25470378935 or juniorokovagng@gmail.com. Avoid greetings and repeat info. Be sharp, polite, and helpful.
+4. For images, include direct URL ending with .jpg/.png/.gif
 
-SPECIAL FORMATS:
-1. For multiple options, use JSON with "type": "interactive_list" format.
-2. For locations, use JSON with "type": "location".
-Otherwise use normal text.`;
+OTHER INSTRUCTIONS:
+- For tech support, be concise and helpful
+- Mention Fred's store for products: https://www.kilimall.co.ke/store/100007946
+- For complex issues, direct to Fred at +25470378935
+- First-time users get a warm greeting
+- Use templates only for pre-approved message types`;
 
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -122,7 +151,7 @@ Otherwise use normal text.`;
             ...history,
             { role: "user", content: userMessage }
           ],
-          response_format: { type: "json_object" } // Encourage JSON responses when needed
+          response_format: { type: "json_object" }
         },
         {
           headers: {
@@ -150,31 +179,32 @@ Otherwise use normal text.`;
 
       if (parsed) {
         if (parsed.type === "interactive_list") {
-          // Handle interactive list message
           await sendInteractiveList(from, parsed);
         } else if (parsed.type === "location") {
-          // Handle location message
           await sendLocation(from, parsed);
-        } else if (parsed?.template_name) {
-          // Handle template message (existing functionality)
-          await sendTemplate(from, parsed);
+        } else if (parsed.type === "template") {
+          // Validate template structure before sending
+          if (!parsed.template_name || !parsed.language_code) {
+            console.warn("⚠️ Invalid template structure - missing required fields");
+            await sendText(from, "Sorry, I had trouble formatting that response. Please try again.");
+          } else {
+            await sendTemplate(from, parsed);
+          }
         } else {
-          // Fallback to text if JSON doesn't match expected formats
           await sendText(from, aiMessage);
         }
       } else if (/\.(jpg|jpeg|png|gif)/.test(aiMessage)) {
-        // Handle image message (existing functionality)
         const imageUrl = aiMessage.match(/https?:\/\/[^\s]+/)[0];
         const caption = aiMessage.replace(imageUrl, "").trim();
         await sendImage(from, imageUrl, caption);
       } else {
-        // Default to text message
         await sendText(from, aiMessage);
       }
 
     } catch (err) {
       if (err.response?.data) {
         console.error("❌ API Error:", err.response.data);
+        await sendText(from, "Sorry, I encountered an error. Please try again later.");
       } else {
         console.error("❌ Internal Error:", err.message);
       }
@@ -225,17 +255,25 @@ async function sendImage(to, link, caption = "") {
   }
 }
 
-async function sendTemplate(to, parsed) {
+async function sendTemplate(to, data) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  
+  // Fallback template if AI response is incomplete
+  const templateData = {
+    template_name: data.template_name || "welcome_message",
+    language_code: data.language_code || "en",
+    components: data.components || []
+  };
+
   try {
     const response = await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       type: "template",
       template: {
-        name: parsed.template_name,
-        language: { code: parsed.language_code || "en" },
-        ...(parsed.components && { components: parsed.components })
+        name: templateData.template_name,
+        language: { code: templateData.language_code },
+        components: templateData.components
       }
     }, {
       headers: {
@@ -243,9 +281,11 @@ async function sendTemplate(to, parsed) {
         "Content-Type": "application/json"
       }
     });
-    console.log("📤 Sent template:", parsed.template_name);
+    console.log("📤 Sent template:", templateData.template_name);
   } catch (err) {
     console.error("❌ Failed to send template:", err.response?.data || err.message);
+    // Fallback to text if template fails
+    await sendText(to, "Here's what I wanted to share: " + JSON.stringify(data.components));
   }
 }
 
@@ -288,6 +328,11 @@ async function sendInteractiveList(to, data) {
     console.log("📋 Sent interactive list to", to);
   } catch (err) {
     console.error("❌ Failed to send interactive list:", err.response?.data || err.message);
+    // Fallback to text with options
+    const optionsText = data.sections.map(section => 
+      `${section.title}:\n${section.rows.map(row => `- ${row.title}: ${row.description}`).join('\n')}`
+    ).join('\n\n');
+    await sendText(to, `${data.body}\n\n${optionsText}`);
   }
 }
 
@@ -313,6 +358,7 @@ async function sendLocation(to, data) {
     console.log("📍 Sent location to", to);
   } catch (err) {
     console.error("❌ Failed to send location:", err.response?.data || err.message);
+    await sendText(to, `Location: ${data.name}\nAddress: ${data.address || 'Not provided'}`);
   }
 }
 
