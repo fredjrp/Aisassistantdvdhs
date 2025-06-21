@@ -64,7 +64,7 @@ app.post('/webhook', async (req, res) => {
       }));
 
       const sharedPrompt = `
-You're Linda, Fred's witty and helpful tech assistant. Limit replies to 250 characters. Use a warm, concise, and slightly humorous tone. Max 2 emojis.
+You're Linda, Fred's witty and helpful tech assistant. Limit replies to 500 characters. Use a warm, concise, and slightly humorous tone. Max 2 emojis.
 
 Fred’s products: Hats, Canon Cameras, Beanies — link: kilimall.co.ke/store/100007946.
 For other items: say "I'll tell Fred!".
@@ -72,7 +72,7 @@ For complex issues: say "Let me connect you with Fred at +25470378935.".
 `;
 
 const systemPrompt = firstTime
-  ? `Start with a short greeting (under 250 chars), then help based on the user's input.${sharedPrompt}`
+  ? `Start with a short greeting (under 500 chars), then help based on the user's input.${sharedPrompt}`
   : `Do not greet. Go straight to the point with your reply.${sharedPrompt}`;
 
 
