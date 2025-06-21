@@ -45,7 +45,7 @@ app.post('/webhook', async (req, res) => {
 
       if (userMessage.toLowerCase().trim() === "reset") {
         await usersRef.doc(from).delete();
-        await sendText(from, "✅ Your session has been reset. You can start fresh now.");
+        await sendText(from, "✅ Session reset! Fresh start activated. How can I help?");
         return res.sendStatus(200);
       }
 
@@ -63,54 +63,25 @@ app.post('/webhook', async (req, res) => {
         content: log.message
       }));
 
-      const systemPrompt = firstTime
-        ? `You are Linda, Fred's smart and witty personal assistant at Fred's Computers. Greet the user warmly (only once) and assist with tech issues like printing, browsing, or general computer help. Keep responses concise — aim for under 250 characters unless more detail is needed (max 500).
-Let users know they can shop for Hats, Canon Cameras, and Beanies from Fred's online store: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. If they ask for different products, take note and say you'll share it with Fred.
-For anything too complex, direct users to contact Fred at +25470378935 or juniorokovagng@gmail.com. Keep the tone friendly and professional. Be quick, smart, and to the point. Use maximum 2 emojis per message.`
-        : `You're Linda, Fred's assistant. Keep helping with tech and computer-related issues. Be concise (under 250 characters preferred, up to 500 max if necessary).
-Mention Fred's online store if users ask about products — Hats, Canon Cameras, and Beanies: https://www.kilimall.co.ke/store/100007946?source=SellerApp&referCode=100007946. Save user interests for future suggestions.
-If anything is beyond your scope, tell the user to reach out to Fred at +25470378935 or juniorokovagng@gmail.com. Avoid greetings and repeat info. Be sharp, polite, and helpful. Use maximum 2 emojis per message.`;
+      const sharedPrompt = `
+You're Linda, Fred's witty and helpful tech assistant. Limit replies to 250 characters. Use a warm, concise, and slightly humorous tone. Max 2 emojis.
 
-      // Check if AI should respond with an interactive list
-      const shouldSendInteractiveList = userMessage.toLowerCase().includes('hiking') || 
-                                      userMessage.toLowerCase().includes('trip') ||
-                                      userMessage.toLowerCase().includes('travel');
+Fred’s products: Hats, Canon Cameras, Beanies — link: kilimall.co.ke/store/100007946.
+For other items: say "I'll tell Fred!".
+For complex issues: say "Let me connect you with Fred at +25470378935.".
+`;
 
-      if (shouldSendInteractiveList) {
-        // Get AI response for the header and body
-        const aiResponse = await axios.post(
-          "https://openrouter.ai/api/v1/chat/completions",
-          {
-            model: "mistralai/mistral-7b-instruct",
-            messages: [
-              { role: "system", content: `Generate a short header (max 3 words) and body text (1 sentence) for a travel options list based on: "${userMessage}". Use max 2 emojis total. Respond ONLY in this JSON format: {"header":"Header text","body":"Body text"}` },
-              ...history,
-              { role: "user", content: userMessage }
-            ],
-            response_format: { type: "json_object" }
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
+const systemPrompt = firstTime
+  ? `Start with a short greeting (under 250 chars), then help based on the user's input.${sharedPrompt}`
+  : `Do not greet. Go straight to the point with your reply.${sharedPrompt}`;
 
-        const aiMessage = aiResponse.data.choices[0].message.content.trim();
-        console.log("🤖 AI responded:", aiMessage);
 
-        let listConfig;
-        try {
-          listConfig = JSON.parse(aiMessage);
-        } catch (e) {
-          listConfig = {
-            header: "Travel Options",
-            body: "Here are some great travel options for you!"
-          };
+      // Check if user asked about hiking
+      if (userMessage.toLowerCase().includes('hiking')) {
+        if (firstTime) {
+          await sendText(from, "Hi! I'm Linda 👋 Fred's assistant. I see you're into hiking! Let me show some options...");
         }
-
-        // Send the interactive list with AI-generated header/body
+        
         await sendInteractiveList(from, {
           messaging_product: "whatsapp",
           recipient_type: "individual",
@@ -120,44 +91,44 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
             type: "list",
             header: {
               type: "text",
-              text: listConfig.header || "🌍 Trip Planner"
+              text: "🌄 Adventure Packages"
             },
             body: {
-              text: listConfig.body || "Hello! Ready to explore? Select a trip package below."
+              text: "Ready for adventure? Choose a package below:"
             },
             footer: {
-              text: "Powered by WanderNow ✈️"
+              text: "Book early for best rates!"
             },
             action: {
-              button: "Choose a Package",
+              button: "View Trips",
               sections: [
                 {
-                  title: "🌅 Popular Getaways",
+                  title: "Popular Trips",
                   rows: [
                     {
                       id: "coast_trip",
                       title: "Mombasa Beach Escape",
-                      description: "3 Days, 2 Nights | All-inclusive | Starts at KES 15,000"
+                      description: "3D/2N | All-inclusive | KES 15,000"
                     },
                     {
                       id: "naivasha_trip",
-                      title: "Naivasha Nature Retreat",
-                      description: "2 Days, 1 Night | Boat ride included | From KES 8,500"
+                      title: "Naivasha Retreat",
+                      description: "2D/1N | Boat ride | KES 8,500"
                     }
                   ]
                 },
                 {
-                  title: "🚌 Upcoming Group Trips",
+                  title: "Group Adventures",
                   rows: [
                     {
                       id: "mtkenya_hike",
-                      title: "Mt. Kenya Hiking Tour",
-                      description: "4 Days | Group adventure | From KES 22,000"
+                      title: "Mt. Kenya Hike",
+                      description: "4 Days | Group tour | KES 22,000"
                     },
                     {
                       id: "arusha_safari",
-                      title: "Arusha Safari (TZ)",
-                      description: "5 Days | Cross-border | KES 35,000 all in"
+                      title: "Arusha Safari",
+                      description: "5 Days | Tanzania | KES 35,000"
                     }
                   ]
                 }
@@ -165,29 +136,28 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
             }
           }
         });
-
-        // Save to Firestore
+        
         const logRef = usersRef.doc(from).collection("logs");
         await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
-        await logRef.add({ 
-          from: "assistant", 
-          message: `Sent interactive list: ${listConfig.header} - ${listConfig.body}`,
-          timestamp: new Date() 
-        });
+        await logRef.add({ from: "assistant", message: "Sent hiking options", timestamp: new Date() });
         
         return res.sendStatus(200);
       }
 
-      // Regular text response
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
         {
           model: "mistralai/mistral-7b-instruct",
           messages: [
-            { role: "system", content: systemPrompt },
+            { 
+              role: "system", 
+              content: `${systemPrompt}\n\nCurrent time: ${new Date().toLocaleTimeString()}. Never make up info. If unsure, say "Let me check with Fred!"`
+            },
             ...history,
             { role: "user", content: userMessage }
-          ]
+          ],
+          max_tokens: 100,
+          temperature: 0.7
         },
         {
           headers: {
@@ -197,7 +167,14 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
         }
       );
 
-      const aiMessage = aiResponse.data.choices[0].message.content.trim();
+      let aiMessage = aiResponse.data.choices[0].message.content.trim();
+      
+      // Enforce character limit strictly
+      if (aiMessage.length > 250) {
+        aiMessage = aiMessage.substring(0, 247) + "...";
+        console.log("⚠️ Trimmed long response to 250 chars");
+      }
+
       console.log("🤖 AI responded:", aiMessage);
 
       // Save to Firestore
@@ -205,31 +182,22 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
       await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
       await logRef.add({ from: "assistant", message: aiMessage, timestamp: new Date() });
 
-      // Try parsing as JSON template
-      let parsed;
-      try {
-        const maybeJSON = JSON.parse(aiMessage);
-        if (maybeJSON?.action === "send_template") parsed = maybeJSON;
-      } catch (e) {
-        parsed = null;
+      // Response handling
+      if (aiMessage.startsWith("[IMAGE]")) {
+        const imageUrl = aiMessage.replace("[IMAGE]", "").trim();
+        await sendImage(from, imageUrl, "From Fred's Computers");
+      } 
+      else if (aiMessage.startsWith("[TEMPLATE]")) {
+        const templateName = aiMessage.replace("[TEMPLATE]", "").trim();
+        await sendTemplate(from, { template_name: templateName });
       }
-
-      if (parsed?.template_name) {
-        await sendTemplate(from, parsed);
-      } else if (/\.(jpg|jpeg|png|gif)/.test(aiMessage)) {
-        const imageUrl = aiMessage.match(/https?:\/\/[^\s]+/)[0];
-        const caption = aiMessage.replace(imageUrl, "").trim();
-        await sendImage(from, imageUrl, caption);
-      } else {
+      else {
         await sendText(from, aiMessage);
       }
 
     } catch (err) {
-      if (err.response?.data) {
-        console.error("❌ API Error:", err.response.data);
-      } else {
-        console.error("❌ Internal Error:", err.message);
-      }
+      console.error("❌ Error:", err.response?.data || err.message);
+      await sendText(from, "Oops! My circuits glitched. Try again or contact Fred at +25470378935");
     }
   }
 
@@ -241,7 +209,7 @@ If anything is beyond your scope, tell the user to reach out to Fred at +2547037
 async function sendText(to, message) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       text: { body: message }
@@ -260,7 +228,7 @@ async function sendText(to, message) {
 async function sendImage(to, link, caption = "") {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       type: "image",
@@ -280,14 +248,13 @@ async function sendImage(to, link, caption = "") {
 async function sendTemplate(to, parsed) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, {
+    await axios.post(url, {
       messaging_product: "whatsapp",
       to,
       type: "template",
       template: {
         name: parsed.template_name,
-        language: { code: parsed.language_code || "en" },
-        ...(parsed.components && { components: parsed.components })
+        language: { code: "en" }
       }
     }, {
       headers: {
@@ -304,7 +271,7 @@ async function sendTemplate(to, parsed) {
 async function sendInteractiveList(to, listData) {
   const url = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   try {
-    const response = await axios.post(url, listData, {
+    await axios.post(url, listData, {
       headers: {
         Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
         "Content-Type": "application/json"
