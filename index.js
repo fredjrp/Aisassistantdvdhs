@@ -96,34 +96,35 @@ async function checkTicketStatus(from, trackingId) {
   }
 }
 
-// List template with $ placeholders
+// Strict WhatsApp interactive list template
 const LIST_TEMPLATE = {
-  messaging_product: "whatsapp",
-  recipient_type: "individual",
-  to: "$PHONE_NUMBER$",
-  type: "interactive",
-  interactive: {
-    type: "list",
-    header: { 
-      type: "text", 
-      text: "$HEADER_TITLE$" 
+  "interactive": {
+    "type": "list",
+    "header": {
+      "type": "text",
+      "text": "$HEADER_TEXT$"
     },
-    body: { 
-      text: "$BODY_CONTENT$" 
+    "body": {
+      "text": "$BODY_TEXT$"
     },
-    footer: { 
-      text: "$FOOTER_TEXT$" 
+    "footer": {
+      "text": "$FOOTER_TEXT$"
     },
-    action: {
-      button: "$BUTTON_TITLE$",
-      sections: [
+    "action": {
+      "button": "$BUTTON_TEXT$",
+      "sections": [
         {
-          title: "$SECTION_TITLE$",
-          rows: "$ROWS_ARRAY$"
+          "title": "$SECTION_TITLE$",
+          "rows": "$ROWS_ARRAY$"
         }
       ]
     }
-  }
+  },
+  "messaging_product": "whatsapp",
+  "origin_graph_explorer": "1",
+  "to": "$PHONE_NUMBER$",
+  "transport": "cors",
+  "type": "interactive"
 };
 
 // Incoming message handler
@@ -198,31 +199,31 @@ For serious or complex queries, say: "You can contact Fred directly at +25470378
 📋 LIST HANDLING:
 When user asks for options/choices, respond with JUST the variables for the list template in this format:
 [LIST_VARS]
-HEADER_TITLE: Your header text
-BODY_CONTENT: Main message content
+HEADER_TEXT: Your header text
+BODY_TEXT: Main message content
 FOOTER_TEXT: Optional footer text
-BUTTON_TITLE: Button text
+BUTTON_TEXT: Button text
 SECTION_TITLE: Section heading
 ROWS_ARRAY: [
-  { id: "item1", title: "Option 1", description: "Description 1" },
-  { id: "item2", title: "Option 2", description: "Description 2" }
+  { id: "id1", title: "Option 1" },
+  { id: "id2", title: "Option 2" }
 ]
 
-Example for hiking trips:
+Example for time slots:
 [LIST_VARS]
-HEADER_TITLE: 🌄 Adventure Packages
-BODY_CONTENT: Choose your perfect adventure package
-FOOTER_TEXT: Book early for best rates!
-BUTTON_TITLE: View Trips
-SECTION_TITLE: Popular Destinations
+HEADER_TEXT: ⏰ When is the best time?
+BODY_TEXT: Let us know when it's best to contact you
+FOOTER_TEXT: We'll respect your schedule
+BUTTON_TEXT: Choose Time
+SECTION_TITLE: Available Time Slots
 ROWS_ARRAY: [
-  { id: "coast", title: "Mombasa Beach", description: "3D/2N | KES 15,000" },
-  { id: "naivasha", title: "Naivasha", description: "2D/1N | KES 8,500" }
+  { id: "morning", title: "🌅 Morning (8am-12pm)" },
+  { id: "afternoon", title: "🌤️ Afternoon (12pm-4pm)" }
 ]
 
 ⚠️ Important:
 - Only include the variables between [LIST_VARS] markers
-- Keep ROWS_ARRAY as valid JSON array
+- Keep ROWS_ARRAY as valid JSON array with id and title only
 - Don't include any other text or explanations
 `;
 
@@ -290,22 +291,15 @@ ROWS_ARRAY: [
 
           // Create the list data from template
           const listData = JSON.parse(JSON.stringify(LIST_TEMPLATE));
-          listData.to = from;
           
           // Replace placeholders with actual values
-          for (const key in vars) {
-            const placeholder = `$${key}$`;
-            const value = vars[key];
-            
-            // Special handling for nested properties
-            if (key === 'ROWS_ARRAY') {
-              listData.interactive.action.sections[0].rows = value;
-            } else {
-              const jsonStr = JSON.stringify(listData);
-              const updatedJson = jsonStr.replace(new RegExp(placeholder, 'g'), value);
-              Object.assign(listData, JSON.parse(updatedJson));
-            }
-          }
+          listData.to = from;
+          listData.interactive.header.text = vars.HEADER_TEXT || "";
+          listData.interactive.body.text = vars.BODY_TEXT || "";
+          listData.interactive.footer.text = vars.FOOTER_TEXT || "";
+          listData.interactive.action.button = vars.BUTTON_TEXT || "Select";
+          listData.interactive.action.sections[0].title = vars.SECTION_TITLE || "Options";
+          listData.interactive.action.sections[0].rows = vars.ROWS_ARRAY || [];
 
           await sendInteractiveList(from, listData);
           console.log("📋 Sent interactive list with template");
