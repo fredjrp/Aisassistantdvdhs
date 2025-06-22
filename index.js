@@ -127,6 +127,27 @@ const LIST_TEMPLATE = {
   "type": "interactive"
 };
 
+// Helper function to parse list variables
+function parseListVars(varsText) {
+  const vars = {};
+  const lines = varsText.split('\n').filter(l => l.trim() !== '');
+  lines.forEach(line => {
+    const [key, ...rest] = line.split(':');
+    const value = rest.join(':').trim();
+    vars[key.trim()] = value;
+  });
+
+  if (vars.ROWS_ARRAY) {
+    try {
+      vars.ROWS_ARRAY = JSON.parse(vars.ROWS_ARRAY);
+    } catch (e) {
+      throw new Error("Invalid ROWS_ARRAY JSON.");
+    }
+  }
+
+  return vars;
+}
+
 // Incoming message handler
 app.post('/webhook', async (req, res) => {
   const body = req.body;
@@ -187,37 +208,37 @@ app.post('/webhook', async (req, res) => {
       }));
 
       const sharedPrompt = `
-You are Linda, Fred's witty and professional AI assistant for WhatsApp. Your responses help clients with tech issues, product guidance, and basic support. Keep messages friendly, confident, and helpful.
+You are Linda, Fred's witty, charming AI assistant for WhatsApp. You help users by providing friendly, clear replies.
 
-🧠 YOUR RULES:
-- If the user asks for a list of options, reply ONLY with the following format between [LIST_VARS] markers.
-- NEVER include any intro text, explanations, or comments outside the [LIST_VARS] block.
-- Always format the ROWS_ARRAY as strict JSON, and escape any quotes if necessary.
+📋 IF the user asks for a list (like time slots, product options, support categories), respond STRICTLY using this format and NOTHING else.
 
-✅ LIST FORMAT:
+Your response MUST contain only the following between the tags [LIST_VARS] and [LIST_VARS_END].
+
+Format:
 [LIST_VARS]
-HEADER_TEXT: Header goes here
-BODY_TEXT: Body message content
-FOOTER_TEXT: Optional footer
-BUTTON_TEXT: Button label
-SECTION_TITLE: Section label
+HEADER_TEXT: Your list header here
+BODY_TEXT: Short body message
+FOOTER_TEXT: Optional footer note
+BUTTON_TEXT: Button text
+SECTION_TITLE: Section title
 ROWS_ARRAY: [
   { "id": "id1", "title": "Option A" },
   { "id": "id2", "title": "Option B" }
 ]
 [LIST_VARS_END]
 
-⚠️ Very Important:
-- DO NOT start with text like: "Here's a list:" or "Okay!"
-- DO NOT write anything before or after the [LIST_VARS] block.
-- Do not include trailing commas in JSON.
-- Only use double quotes in JSON values.
-- For non-list replies, write a friendly, helpful response (under 500 characters unless needed).
-- If unsure about an answer, say: "Let me check with Fred!"
+✅ VERY STRICT RULES:
+- DO NOT say anything like "Here's a list..." before or after
+- DO NOT add any text outside the [LIST_VARS] block
+- Make sure the JSON is valid: no trailing commas, only double quotes
 
-🔥 Products: Hats, Canon Cameras, Beanies  
-More: https://kilimall.co.ke/store/100007946  
-Need help? Tell them to reach Fred at +25470378935
+🚫 WRONG:
+❌ Here's your list:
+❌ Let me show you:
+❌ Anything outside [LIST_VARS] block
+
+🔥 Available products: Hats, Canon Cameras, Beanies (https://kilimall.co.ke/store/100007946)  
+📞 Contact Fred directly at +25470378935 if unsure.
 `;
 
       const systemPrompt = firstTime
@@ -236,7 +257,7 @@ Need help? Tell them to reach Fred at +25470378935
             ...history,
             { role: "user", content: userMessage }
           ],
-          max_tokens: 100,
+          max_tokens: 3500,  // Increased from 100 to 3500
           temperature: 0.7
         },
         {
@@ -250,9 +271,9 @@ Need help? Tell them to reach Fred at +25470378935
       let aiMessage = aiResponse.data.choices[0].message.content.trim();
       
       // Enforce character limit strictly
-      if (aiMessage.length > 2500 && !aiMessage.includes("[LIST_VARS]")) {
-        aiMessage = aiMessage.substring(0, 2497) + "...";
-        console.log("⚠️ Trimmed long response to 2500 chars");
+      if (aiMessage.length > 3500 && !aiMessage.includes("[LIST_VARS]")) {
+        aiMessage = aiMessage.substring(0, 3497) + "...";
+        console.log("⚠️ Trimmed long response to 3500 chars");
       }
 
       console.log("🤖 AI responded:", aiMessage);
@@ -263,28 +284,13 @@ Need help? Tell them to reach Fred at +25470378935
           // Extract variables from the AI response
           const listStart = aiMessage.indexOf("[LIST_VARS]");
           const listEnd = aiMessage.indexOf("[LIST_VARS_END]");
-          if (listStart === -1 || listEnd === -1) throw new Error("Missing LIST_VARS block");
+
+          if (listStart === -1 || listEnd === -1) {
+            throw new Error("Missing [LIST_VARS] block.");
+          }
 
           const varsPart = aiMessage.substring(listStart + 11, listEnd).trim();
-          const varsLines = varsPart.split('\n').filter(line => line.trim() !== '');
-          
-          const vars = {};
-          varsLines.forEach(line => {
-            const [key, ...valueParts] = line.split(':');
-            if (key && valueParts.length > 0) {
-              vars[key.trim()] = valueParts.join(':').trim();
-            }
-          });
-
-          // Special handling for ROWS_ARRAY
-          if (vars.ROWS_ARRAY) {
-            try {
-              vars.ROWS_ARRAY = JSON.parse(vars.ROWS_ARRAY);
-            } catch (e) {
-              console.error("Failed to parse ROWS_ARRAY:", e);
-              throw new Error("Invalid ROWS_ARRAY format");
-            }
-          }
+          const vars = parseListVars(varsPart);
 
           // Create the list data from template
           const listData = JSON.parse(JSON.stringify(LIST_TEMPLATE));
