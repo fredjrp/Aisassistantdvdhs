@@ -259,7 +259,7 @@ ROWS_ARRAY: [
       
       // Enforce character limit strictly
       if (aiMessage.length > 2500 && !aiMessage.includes("[LIST_VARS]")) {
-        aiMessage = aiMessage.substring(0, 247) + "...";
+        aiMessage = aiMessage.substring(0, 2497) + "...";
         console.log("⚠️ Trimmed long response to 2500 chars");
       }
 
