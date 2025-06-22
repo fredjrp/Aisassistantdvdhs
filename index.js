@@ -1,11 +1,13 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 const app = express();
 const usersRef = require('./firebase');
 
 const VERIFY_TOKEN = "your_custom_token";
 
+app.use(cors());
 app.use(express.json());
 
 // Webhook verification
@@ -74,7 +76,6 @@ For complex issues: say "Let me connect you with Fred at +25470378935.".
 const systemPrompt = firstTime
   ? `Start with a short greeting (under 500 chars), then help based on the user's input.${sharedPrompt}`
   : `Do not greet. Go straight to the point with your reply.${sharedPrompt}`;
-
 
       // Check if user asked about hiking
       if (userMessage.toLowerCase().includes('hiking')) {
@@ -204,6 +205,114 @@ const systemPrompt = firstTime
   res.sendStatus(200);
 });
 
+// =============== Dashboard API Endpoints ================
+
+// Get active users
+app.get('/users', async (req, res) => {
+  try {
+    const snapshot = await usersRef.where('active', '==', true).get();
+    const users = [];
+    snapshot.forEach(doc => {
+      users.push({
+        id: doc.id,
+        phone: doc.id, // Using phone as ID
+        lastActive: doc.data().lastActive || new Date(),
+        unread: doc.data().unread || 0
+      });
+    });
+    res.json(users);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).send('Error fetching users');
+  }
+});
+
+// Get user messages
+app.get('/messages/:phone', async (req, res) => {
+  try {
+    const snapshot = await usersRef.doc(req.params.phone).collection('logs')
+      .orderBy('timestamp', 'desc')
+      .limit(10)
+      .get();
+    
+    const messages = [];
+    snapshot.forEach(doc => {
+      messages.push({
+        id: doc.id,
+        from: doc.data().from,
+        message: doc.data().message,
+        timestamp: doc.data().timestamp.toDate()
+      });
+    });
+    
+    res.json(messages.reverse()); // Return in chronological order
+  } catch (err) {
+    console.error('Error fetching messages:', err);
+    res.status(500).send('Error fetching messages');
+  }
+});
+
+// Send message from dashboard
+app.post('/send', async (req, res) => {
+  try {
+    const { phone, message } = req.body;
+    
+    // Save to Firestore as agent message
+    await usersRef.doc(phone).collection('logs').add({
+      from: 'agent',
+      message: message,
+      timestamp: new Date()
+    });
+    
+    // Send via WhatsApp API
+    await sendText(phone, message);
+    
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error sending message:', err);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+// Get message templates
+app.get('/templates', async (req, res) => {
+  try {
+    // Return your predefined templates
+    res.json([
+      {
+        name: "order_confirmation",
+        category: "Order Updates",
+        content: "Hello {{1}}, your order #{{2}} has been confirmed and will be shipped soon."
+      },
+      {
+        name: "support_response",
+        category: "Support",
+        content: "Thank you for contacting support. We're looking into your issue and will get back to you soon."
+      },
+      {
+        name: "hiking_promo",
+        category: "Promotions",
+        content: "🌄 Adventure calling! Get 15% off our hiking gear this week. Use code HIKE15 at checkout!"
+      }
+    ]);
+  } catch (err) {
+    console.error('Error fetching templates:', err);
+    res.status(500).json({ error: 'Failed to load templates' });
+  }
+});
+
+// Send template from dashboard
+app.post('/template', async (req, res) => {
+  try {
+    const { phone, template } = req.body;
+    await sendTemplate(phone, { template_name: template });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error sending template:', err);
+    res.status(500).json({ error: 'Failed to send template' });
+  }
+});
+
 // =============== Messaging Helpers ================
 
 async function sendText(to, message) {
@@ -222,6 +331,7 @@ async function sendText(to, message) {
     console.log("💬 Sent text to", to);
   } catch (err) {
     console.error("❌ Failed to send text:", err.response?.data || err.message);
+    throw err; // Re-throw for dashboard error handling
   }
 }
 
@@ -242,6 +352,7 @@ async function sendImage(to, link, caption = "") {
     console.log("🖼️ Sent image to", to);
   } catch (err) {
     console.error("❌ Failed to send image:", err.response?.data || err.message);
+    throw err;
   }
 }
 
@@ -265,6 +376,7 @@ async function sendTemplate(to, parsed) {
     console.log("📤 Sent template:", parsed.template_name);
   } catch (err) {
     console.error("❌ Failed to send template:", err.response?.data || err.message);
+    throw err;
   }
 }
 
@@ -280,6 +392,7 @@ async function sendInteractiveList(to, listData) {
     console.log("📋 Sent interactive list to", to);
   } catch (err) {
     console.error("❌ Failed to send interactive list:", err.response?.data || err.message);
+    throw err;
   }
 }
 
@@ -288,4 +401,10 @@ app.listen(3000, () => {
   console.log('🚀 Server is running on http://localhost:3000');
   console.log("📞 PHONE ID:", process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("🔐 WHATSAPP TOKEN:", process.env.WHATSAPP_ACCESS_TOKEN?.slice(0, 10) + '...');
+  console.log("📊 Dashboard endpoints ready:");
+  console.log("- GET /users - List active users");
+  console.log("- GET /messages/:phone - Get conversation history");
+  console.log("- POST /send - Send message to user");
+  console.log("- GET /templates - List message templates");
+  console.log("- POST /template - Send template to user");
 });
