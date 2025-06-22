@@ -1,12 +1,22 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const nodemailer = require('nodemailer');
 const app = express();
 const usersRef = require('./firebase');
 
 const VERIFY_TOKEN = "your_custom_token";
 
 app.use(express.json());
+
+// Email transporter setup
+const transporter = nodemailer.createTransport({
+  service: process.env.EMAIL_SERVICE || 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
 
 // Webhook verification
 app.get('/webhook', (req, res) => {
@@ -23,16 +33,74 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// Support ticket functions
+async function createSupportTicket(from, userMessage) {
+  const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
+  
+  // Save to Firebase
+  await usersRef.doc(from)
+    .collection('tickets')
+    .doc(trackingId)
+    .set({
+      id: trackingId,
+      issue: userMessage,
+      status: 'pending',
+      createdAt: new Date(),
+      resolved: false,
+      from,
+      lastUpdated: new Date()
+    });
+
+  // Send email
+  await sendSupportEmail(from, userMessage, trackingId);
+
+  return trackingId;
+}
+
+async function sendSupportEmail(from, userMessage, trackingId) {
+  try {
+    const info = await transporter.sendMail({
+      from: `"Fred AI Support" <${process.env.EMAIL_USER}>`,
+      to: process.env.SUPPORT_EMAIL || 'support@yourdomain.com',
+      subject: `New Support Ticket: ${trackingId}`,
+      text: `New support ticket created:\n\nFrom: ${from}\nIssue: ${userMessage}\nTracking ID: ${trackingId}\n\nPlease resolve this issue promptly.`,
+      html: `
+        <h1>New Support Ticket: ${trackingId}</h1>
+        <p><strong>From:</strong> ${from}</p>
+        <p><strong>Issue:</strong> ${userMessage}</p>
+        <p><strong>Tracking ID:</strong> ${trackingId}</p>
+        <p>Please resolve this issue promptly.</p>
+      `
+    });
+    console.log("📧 Support email sent:", info.messageId);
+  } catch (error) {
+    console.error("❌ Failed to send support email:", error);
+  }
+}
+
+async function checkTicketStatus(from, trackingId) {
+  try {
+    const ticketDoc = await usersRef.doc(from)
+      .collection('tickets')
+      .doc(trackingId)
+      .get();
+
+    if (!ticketDoc.exists) {
+      return { error: `No ticket found with ID ${trackingId}` };
+    }
+
+    return ticketDoc.data();
+  } catch (error) {
+    console.error("Error checking ticket status:", error);
+    return { error: "Failed to check ticket status" };
+  }
+}
+
 // Incoming message handler
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
-  if (
-    body.object &&
-    body.entry &&
-    body.entry[0].changes &&
-    body.entry[0].changes[0].value.messages
-  ) {
+  if (body.object && body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
     const message = body.entry[0].changes[0].value.messages[0];
     const from = message.from;
     const userMessage = message.text?.body || "No text";
@@ -40,6 +108,30 @@ app.post('/webhook', async (req, res) => {
     console.log(`📩 Incoming message from ${from}:`, userMessage);
 
     try {
+      // Check for ticket status request first
+      if (userMessage.toLowerCase().startsWith('track')) {
+        const parts = userMessage.split(" ");
+        const trackingId = parts[1]?.trim().toUpperCase();
+
+        if (!trackingId) {
+          await sendText(from, "⚠️ Please send a tracking number like: `track TKT-LSO6FHH6`");
+          return res.sendStatus(200);
+        }
+
+        const ticket = await checkTicketStatus(from, trackingId);
+        if (ticket.error) {
+          await sendText(from, `❌ ${ticket.error}`);
+        } else {
+          await sendText(from, 
+            `📋 Ticket #${ticket.id}\n` +
+            `Status: ${ticket.status}\n` +
+            `Issue: ${ticket.issue}\n` +
+            `Created: ${ticket.createdAt.toDate().toLocaleString()}`
+          );
+        }
+        return res.sendStatus(200);
+      }
+
       const userDoc = await usersRef.doc(from).get();
       const firstTime = !userDoc.exists || !userDoc.data().greeted;
 
@@ -66,15 +158,14 @@ app.post('/webhook', async (req, res) => {
       const sharedPrompt = `
 You're Linda, Fred's witty and helpful tech assistant. Limit replies to 500 characters. Use a warm, concise, and slightly humorous tone. Max 2 emojis.
 
-Fred’s products: Hats, Canon Cameras, Beanies — link: kilimall.co.ke/store/100007946.
+Fred's products: Hats, Canon Cameras, Beanies — link: kilimall.co.ke/store/100007946.
 For other items: say "I'll tell Fred!".
 For complex issues: say "Let me connect you with Fred at +25470378935.".
 `;
 
-const systemPrompt = firstTime
-  ? `Start with a short greeting (under 500 chars), then help based on the user's input.${sharedPrompt}`
-  : `Do not greet. Go straight to the point with your reply.${sharedPrompt}`;
-
+      const systemPrompt = firstTime
+        ? `Start with a short greeting (under 500 chars), then help based on the user's input.${sharedPrompt}`
+        : `Do not greet. Go straight to the point with your reply.${sharedPrompt}`;
 
       // Check if user asked about hiking
       if (userMessage.toLowerCase().includes('hiking')) {
@@ -176,6 +267,12 @@ const systemPrompt = firstTime
       }
 
       console.log("🤖 AI responded:", aiMessage);
+
+      // Check if this is an unresolved issue
+      if (aiMessage.includes("Let me check with Fred!")) {
+        const trackingId = await createSupportTicket(from, userMessage);
+        aiMessage += `\n\nI've created a support ticket for you (ID: ${trackingId}). Our team will contact you soon. You can check status by sending: track ${trackingId}`;
+      }
 
       // Save to Firestore
       const logRef = usersRef.doc(from).collection("logs");
@@ -288,4 +385,5 @@ app.listen(3000, () => {
   console.log('🚀 Server is running on http://localhost:3000');
   console.log("📞 PHONE ID:", process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("🔐 WHATSAPP TOKEN:", process.env.WHATSAPP_ACCESS_TOKEN?.slice(0, 10) + '...');
+  console.log("📧 Email Service:", process.env.EMAIL_SERVICE || 'gmail');
 });
