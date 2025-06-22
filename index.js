@@ -96,6 +96,36 @@ async function checkTicketStatus(from, trackingId) {
   }
 }
 
+// List template with $ placeholders
+const LIST_TEMPLATE = {
+  messaging_product: "whatsapp",
+  recipient_type: "individual",
+  to: "$PHONE_NUMBER$",
+  type: "interactive",
+  interactive: {
+    type: "list",
+    header: { 
+      type: "text", 
+      text: "$HEADER_TITLE$" 
+    },
+    body: { 
+      text: "$BODY_CONTENT$" 
+    },
+    footer: { 
+      text: "$FOOTER_TEXT$" 
+    },
+    action: {
+      button: "$BUTTON_TITLE$",
+      sections: [
+        {
+          title: "$SECTION_TITLE$",
+          rows: "$ROWS_ARRAY$"
+        }
+      ]
+    }
+  }
+};
+
 // Incoming message handler
 app.post('/webhook', async (req, res) => {
   const body = req.body;
@@ -166,117 +196,39 @@ For serious or complex queries, say: "You can contact Fred directly at +25470378
 - Never fabricate answers. If unsure, say "Let me confirm that with Fred!"
 
 📋 LIST HANDLING:
-If the user's message indicates they want options, trips, services, recipes, or items (e.g., "show me options" or "what trips do you offer?"), return ONLY a WhatsApp-compatible interactive list in valid JSON.
+When user asks for options/choices, respond with JUST the variables for the list template in this format:
+[LIST_VARS]
+HEADER_TITLE: Your header text
+BODY_CONTENT: Main message content
+FOOTER_TEXT: Optional footer text
+BUTTON_TITLE: Button text
+SECTION_TITLE: Section heading
+ROWS_ARRAY: [
+  { id: "item1", title: "Option 1", description: "Description 1" },
+  { id: "item2", title: "Option 2", description: "Description 2" }
+]
 
-Structure it like this, with **no extra text**:
-[LIST_JSON]{
-  "messaging_product": "whatsapp",
-  "recipient_type": "individual",
-  "to": "{{phone_number}}",
-  "type": "interactive",
-  "interactive": {
-    "type": "list",
-    "header": { "type": "text", "text": "Header Title" },
-    "body": { "text": "Body content here" },
-    "footer": { "text": "Footer (optional)" },
-    "action": {
-      "button": "Button Title",
-      "sections": [
-        {
-          "title": "Section Title",
-          "rows": [
-            {
-              "id": "item1",
-              "title": "Item Title",
-              "description": "Item Description"
-            }
-          ]
-        }
-      ]
-    }
-  }
-}
+Example for hiking trips:
+[LIST_VARS]
+HEADER_TITLE: 🌄 Adventure Packages
+BODY_CONTENT: Choose your perfect adventure package
+FOOTER_TEXT: Book early for best rates!
+BUTTON_TITLE: View Trips
+SECTION_TITLE: Popular Destinations
+ROWS_ARRAY: [
+  { id: "coast", title: "Mombasa Beach", description: "3D/2N | KES 15,000" },
+  { id: "naivasha", title: "Naivasha", description: "2D/1N | KES 8,500" }
+]
 
 ⚠️ Important:
-- NEVER add comments or explain the JSON.
-- ALWAYS wrap the JSON response in [LIST_JSON]{...} exactly.
-- ALWAYS replace the "to" value with {{phone_number}} — the server will insert the real number.
-- DO NOT respond with regular text if you're sending a list — only JSON.
-
-When not sending a list, keep messages short, natural, and polished — like a smart support rep with a great sense of humor.
+- Only include the variables between [LIST_VARS] markers
+- Keep ROWS_ARRAY as valid JSON array
+- Don't include any other text or explanations
 `;
 
       const systemPrompt = firstTime
         ? `Start with a quick friendly greeting (under 500 characters), then help based on the message.\n${sharedPrompt}`
         : `No greeting. Go straight to helping. Be concise, helpful, and witty.\n${sharedPrompt}`;
-
-      // Check if user asked about hiking
-      if (userMessage.toLowerCase().includes('hiking')) {
-        if (firstTime) {
-          await sendText(from, "Hi! I'm Linda 👋 Fred's assistant. I see you're into hiking! Let me show some options...");
-        }
-        
-        await sendInteractiveList(from, {
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: from,
-          type: "interactive",
-          interactive: {
-            type: "list",
-            header: {
-              type: "text",
-              text: "🌄 Adventure Packages"
-            },
-            body: {
-              text: "Ready for adventure? Choose a package below:"
-            },
-            footer: {
-              text: "Book early for best rates!"
-            },
-            action: {
-              button: "View Trips",
-              sections: [
-                {
-                  title: "Popular Trips",
-                  rows: [
-                    {
-                      id: "coast_trip",
-                      title: "Mombasa Beach Escape",
-                      description: "3D/2N | All-inclusive | KES 15,000"
-                    },
-                    {
-                      id: "naivasha_trip",
-                      title: "Naivasha Retreat",
-                      description: "2D/1N | Boat ride | KES 8,500"
-                    }
-                  ]
-                },
-                {
-                  title: "Group Adventures",
-                  rows: [
-                    {
-                      id: "mtkenya_hike",
-                      title: "Mt. Kenya Hike",
-                      description: "4 Days | Group tour | KES 22,000"
-                    },
-                    {
-                      id: "arusha_safari",
-                      title: "Arusha Safari",
-                      description: "5 Days | Tanzania | KES 35,000"
-                    }
-                  ]
-                }
-              ]
-            }
-          }
-        });
-        
-        const logRef = usersRef.doc(from).collection("logs");
-        await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
-        await logRef.add({ from: "assistant", message: "Sent hiking options", timestamp: new Date() });
-        
-        return res.sendStatus(200);
-      }
 
       const aiResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -304,30 +256,69 @@ When not sending a list, keep messages short, natural, and polished — like a s
       let aiMessage = aiResponse.data.choices[0].message.content.trim();
       
       // Enforce character limit strictly
-      if (aiMessage.length > 250) {
+      if (aiMessage.length > 250 && !aiMessage.includes("[LIST_VARS]")) {
         aiMessage = aiMessage.substring(0, 247) + "...";
         console.log("⚠️ Trimmed long response to 250 chars");
       }
 
       console.log("🤖 AI responded:", aiMessage);
 
-      // Check if AI returned a WhatsApp Interactive List JSON
-      if (aiMessage.startsWith("[LIST_JSON]")) {
+      // Check if AI returned list variables
+      if (aiMessage.includes("[LIST_VARS]")) {
         try {
-          const jsonStr = aiMessage.replace("[LIST_JSON]", "").trim();
+          // Extract variables from the AI response
+          const varsPart = aiMessage.split("[LIST_VARS]")[1].trim();
+          const varsLines = varsPart.split('\n').filter(line => line.trim() !== '');
+          
+          const vars = {};
+          varsLines.forEach(line => {
+            const [key, ...valueParts] = line.split(':');
+            if (key && valueParts.length > 0) {
+              vars[key.trim()] = valueParts.join(':').trim();
+            }
+          });
 
-          // Dynamically insert recipient number
-          const parsedList = JSON.parse(jsonStr);
-          parsedList.to = from;
+          // Special handling for ROWS_ARRAY
+          if (vars.ROWS_ARRAY) {
+            try {
+              vars.ROWS_ARRAY = JSON.parse(vars.ROWS_ARRAY);
+            } catch (e) {
+              console.error("Failed to parse ROWS_ARRAY:", e);
+              throw new Error("Invalid ROWS_ARRAY format");
+            }
+          }
 
-          await sendInteractiveList(from, parsedList);
-          // Optionally log
-          console.log("📋 Sent dynamic AI-generated list");
+          // Create the list data from template
+          const listData = JSON.parse(JSON.stringify(LIST_TEMPLATE));
+          listData.to = from;
+          
+          // Replace placeholders with actual values
+          for (const key in vars) {
+            const placeholder = `$${key}$`;
+            const value = vars[key];
+            
+            // Special handling for nested properties
+            if (key === 'ROWS_ARRAY') {
+              listData.interactive.action.sections[0].rows = value;
+            } else {
+              const jsonStr = JSON.stringify(listData);
+              const updatedJson = jsonStr.replace(new RegExp(placeholder, 'g'), value);
+              Object.assign(listData, JSON.parse(updatedJson));
+            }
+          }
+
+          await sendInteractiveList(from, listData);
+          console.log("📋 Sent interactive list with template");
+
+          // Save to Firestore
+          const logRef = usersRef.doc(from).collection("logs");
+          await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
+          await logRef.add({ from: "assistant", message: "Sent interactive options list", timestamp: new Date() });
 
           return res.sendStatus(200);
         } catch (err) {
-          console.error("❌ Failed to parse LIST_JSON:", err.message);
-          await sendText(from, "Sorry, I couldn't load the options. Please try again.");
+          console.error("❌ Failed to process list variables:", err.message);
+          await sendText(from, "Sorry, I couldn't prepare the options. Please try again.");
           return res.sendStatus(200);
         }
       }
