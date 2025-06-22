@@ -127,21 +127,38 @@ const LIST_TEMPLATE = {
   "type": "interactive"
 };
 
-// Helper function to parse list variables
+// Helper function to parse list variables with JSON repair
 function parseListVars(varsText) {
   const vars = {};
   const lines = varsText.split('\n').filter(l => l.trim() !== '');
+  
   lines.forEach(line => {
     const [key, ...rest] = line.split(':');
     const value = rest.join(':').trim();
     vars[key.trim()] = value;
   });
 
+  // Validate required fields
+  if (!vars.SECTION_TITLE) {
+    throw new Error("SECTION_TITLE is required");
+  }
+
   if (vars.ROWS_ARRAY) {
     try {
+      // First try to parse as-is
       vars.ROWS_ARRAY = JSON.parse(vars.ROWS_ARRAY);
     } catch (e) {
-      throw new Error("Invalid ROWS_ARRAY JSON.");
+      console.error("Invalid ROWS_ARRAY JSON. Trying to fix...");
+      // Attempt to fix by quoting unquoted keys
+      const fixedJson = vars.ROWS_ARRAY
+        .replace(/([{,])\s*(\w+)\s*:/g, '$1 "$2":')
+        .replace(/:([^"\s][^,}\s]*)([,}])/g, ':"$1"$2');
+      
+      try {
+        vars.ROWS_ARRAY = JSON.parse(fixedJson);
+      } catch (e2) {
+        throw new Error("Invalid ROWS_ARRAY format after repair attempt.");
+      }
     }
   }
 
@@ -208,37 +225,26 @@ app.post('/webhook', async (req, res) => {
       }));
 
       const sharedPrompt = `
-You are Linda, Fred's witty, charming AI assistant for WhatsApp. You help users by providing friendly, clear replies.
+You are Linda, Fred's witty WhatsApp assistant. When asked for a list, respond in the exact JSON-like format below — strictly between [LIST_VARS] and [LIST_VARS_END], and with correct JSON syntax (quoted keys and values). DO NOT include extra text before or after.
 
-📋 IF the user asks for a list (like time slots, product options, support categories), respond STRICTLY using this format and NOTHING else.
-
-Your response MUST contain only the following between the tags [LIST_VARS] and [LIST_VARS_END].
-
-Format:
 [LIST_VARS]
-HEADER_TEXT: Your list header here
-BODY_TEXT: Short body message
-FOOTER_TEXT: Optional footer note
-BUTTON_TEXT: Button text
-SECTION_TITLE: Section title
+HEADER_TEXT: "Your header text here"
+BODY_TEXT: "Main message content"
+FOOTER_TEXT: "Optional footer text"
+BUTTON_TEXT: "Your button text"
+SECTION_TITLE: "Your section title"
 ROWS_ARRAY: [
-  { "id": "id1", "title": "Option A" },
-  { "id": "id2", "title": "Option B" }
+  { "id": "opt1", "title": "Option 1" },
+  { "id": "opt2", "title": "Option 2" }
 ]
 [LIST_VARS_END]
 
-✅ VERY STRICT RULES:
-- DO NOT say anything like "Here's a list..." before or after
-- DO NOT add any text outside the [LIST_VARS] block
-- Make sure the JSON is valid: no trailing commas, only double quotes
-
-🚫 WRONG:
-❌ Here's your list:
-❌ Let me show you:
-❌ Anything outside [LIST_VARS] block
-
-🔥 Available products: Hats, Canon Cameras, Beanies (https://kilimall.co.ke/store/100007946)  
-📞 Contact Fred directly at +25470378935 if unsure.
+❗ Rules:
+- All keys and strings must be double-quoted.
+- Never leave SECTION_TITLE empty.
+- Never add commentary, titles, or formatting like Markdown.
+- Never explain what you're sending — just output the block exactly as shown.
+- If no rows are available, set ROWS_ARRAY to an empty array [].
 `;
 
       const systemPrompt = firstTime
@@ -257,7 +263,7 @@ ROWS_ARRAY: [
             ...history,
             { role: "user", content: userMessage }
           ],
-          max_tokens: 3500,  // Increased from 100 to 3500
+          max_tokens: 3500,
           temperature: 0.7
         },
         {
@@ -301,7 +307,7 @@ ROWS_ARRAY: [
           listData.interactive.body.text = vars.BODY_TEXT || "";
           listData.interactive.footer.text = vars.FOOTER_TEXT || "";
           listData.interactive.action.button = vars.BUTTON_TEXT || "Select";
-          listData.interactive.action.sections[0].title = vars.SECTION_TITLE || "Options";
+          listData.interactive.action.sections[0].title = vars.SECTION_TITLE;
           listData.interactive.action.sections[0].rows = vars.ROWS_ARRAY || [];
 
           await sendInteractiveList(from, listData);
