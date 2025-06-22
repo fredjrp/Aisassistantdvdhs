@@ -220,6 +220,7 @@ ROWS_ARRAY: [
   { id: "morning", title: "🌅 Morning (8am-12pm)" },
   { id: "afternoon", title: "🌤️ Afternoon (12pm-4pm)" }
 ]
+- Don't start with this [LIST_JSON] only this [LIST_VARS]
 
 ⚠️ Important:
 - Only include the variables between [LIST_VARS] markers
@@ -257,9 +258,9 @@ ROWS_ARRAY: [
       let aiMessage = aiResponse.data.choices[0].message.content.trim();
       
       // Enforce character limit strictly
-      if (aiMessage.length > 250 && !aiMessage.includes("[LIST_VARS]")) {
+      if (aiMessage.length > 2500 && !aiMessage.includes("[LIST_VARS]")) {
         aiMessage = aiMessage.substring(0, 247) + "...";
-        console.log("⚠️ Trimmed long response to 250 chars");
+        console.log("⚠️ Trimmed long response to 2500 chars");
       }
 
       console.log("🤖 AI responded:", aiMessage);
