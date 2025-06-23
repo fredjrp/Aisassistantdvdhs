@@ -21,54 +21,65 @@ const transporter = nodemailer.createTransport({
 
 // Trigger words
 const WELCOME_TRIGGERS = ["hello", "hi", "hey", "start"];
+const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Interactive message content
-const WELCOME_INTERACTIVE_MESSAGE = {
-  messaging_product: "whatsapp",
-  to: "+254703738935",
-  type: "interactive",
-  interactive: {
-    type: "list",
-    header: {
-      type: "text",
-      text: "Message Header"
+const WELCOME_INTERACTIVE_MESSAGE = async (to) => {
+  await axios({
+    url: `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
     },
-    body: {
-      text: "This is a interactive list message"
-    },
-    footer: {
-      text: "This is the message footer"
-    },
-    action: {
-      button: "Tap for the options",
-      sections: [
-        {
-          title: "First Section",
-          rows: [
+    data: {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        header: {
+          type: 'text',
+          text: 'Message Header'
+        },
+        body: {
+          text: 'This is an interactive list message'
+        },
+        footer: {
+          text: 'This is the message footer'
+        },
+        action: {
+          button: 'Tap for the options',
+          sections: [
             {
-              id: "first_option",
-              title: "First option",
-              description: "This is the description of the first option"
+              title: 'First Section',
+              rows: [
+                {
+                  id: 'first_option',
+                  title: 'First option',
+                  description: 'This is the description of the first option'
+                },
+                {
+                  id: 'second_option',
+                  title: 'Second option',
+                  description: 'This is the description of the second option'
+                }
+              ]
             },
             {
-              id: "second_option",
-              title: "Second option",
-              description: "This is the description of the second option"
-            }
-          ]
-        },
-        {
-          title: "Second Section",
-          rows: [
-            {
-              id: "third_option",
-              title: "Third option"
+              title: 'Second Section',
+              rows: [
+                {
+                  id: 'third_option',
+                  title: 'Third option'
+                }
+              ]
             }
           ]
         }
-      ]
+      }
     }
-  }
+  });
 };
 
 // Initialize templates collection on startup
