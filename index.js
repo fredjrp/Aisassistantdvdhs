@@ -10,7 +10,7 @@ const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "your_custom_to
 
 app.use(express.json());
 
-// Email transporter setup (unchanged)
+// Email transporter setup
 const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || 'gmail',
   auth: {
@@ -124,7 +124,7 @@ app.post('/templates', async (req, res) => {
   }
 });
 
-// Support ticket functions (unchanged)
+// Support ticket functions
 async function createSupportTicket(from, userMessage) {
   const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
   
@@ -165,74 +165,173 @@ async function sendSupportEmail(from, userMessage, trackingId) {
   }
 }
 
-// Webhook handler with template matching
+// Updated webhook handler with interactive message support
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body;
 
-  if (!entry || !entry[0]?.changes?.[0]?.value?.messages?.[0]) {
+  if (!entry || !entry[0]?.changes?.[0]?.value) {
     return res.status(400).send('Invalid Request');
   }
 
-  const message = entry[0].changes[0].value.messages[0];
-  const from = message.from;
-  const userMessage = message.type === 'text' ? message.text.body : '';
+  const changes = entry[0].changes[0].value;
+  const statuses = changes.statuses ? changes.statuses[0] : null;
+  const messages = changes.messages ? changes.messages[0] : null;
 
-  console.log(`📩 Message from ${from}: ${userMessage}`);
+  // Handle message status updates
+  if (statuses) {
+    console.log(`
+      MESSAGE STATUS UPDATE:
+      ID: ${statuses.id},
+      STATUS: ${statuses.status}
+    `);
+    return res.status(200).send('OK');
+  }
 
-  try {
-    // Check for ticket status requests
-    if (userMessage.toLowerCase().startsWith('track')) {
-      const trackingId = userMessage.split(' ')[1]?.trim();
-      if (!trackingId) {
-        await sendTextMessage(from, "⚠️ Please include a tracking ID");
-        return res.status(200).send('OK');
+  // Handle incoming messages
+  if (messages) {
+    const from = messages.from;
+    const messageId = messages.id;
+
+    try {
+      // Handle interactive messages (list replies or button replies)
+      if (messages.type === 'interactive') {
+        const interactive = messages.interactive;
+        
+        if (interactive.type === 'list_reply') {
+          const selectedId = interactive.list_reply.id;
+          const selectedTitle = interactive.list_reply.title;
+          
+          console.log(`User selected list option: ${selectedId} - ${selectedTitle}`);
+          
+          // Handle the selected option
+          await handleListReply(from, messageId, selectedId, selectedTitle);
+          return res.status(200).send('OK');
+        }
+        
+        if (interactive.type === 'button_reply') {
+          const selectedId = interactive.button_reply.id;
+          const selectedTitle = interactive.button_reply.title;
+          
+          console.log(`User clicked button: ${selectedId} - ${selectedTitle}`);
+          
+          // Handle the button click
+          await handleButtonReply(from, messageId, selectedId, selectedTitle);
+          return res.status(200).send('OK');
+        }
       }
 
-      const ticket = await checkTicketStatus(from, trackingId);
-      if (ticket.error) {
-        await sendTextMessage(from, ticket.error);
-      } else {
-        await sendTextMessage(from, 
-          `📋 Ticket #${ticket.id}\nStatus: ${ticket.status}\nIssue: ${ticket.issue}`
-        );
+      // Handle text messages
+      if (messages.type === 'text') {
+        const userMessage = messages.text.body;
+        console.log(`📩 Message from ${from}: ${userMessage}`);
+
+        // Check for ticket status requests
+        if (userMessage.toLowerCase().startsWith('track')) {
+          const trackingId = userMessage.split(' ')[1]?.trim();
+          if (!trackingId) {
+            await sendTextMessage(from, "⚠️ Please include a tracking ID", messageId);
+            return res.status(200).send('OK');
+          }
+
+          const ticket = await checkTicketStatus(from, trackingId);
+          if (ticket.error) {
+            await sendTextMessage(from, ticket.error, messageId);
+          } else {
+            await sendTextMessage(from, 
+              `📋 Ticket #${ticket.id}\nStatus: ${ticket.status}\nIssue: ${ticket.issue}`,
+              messageId
+            );
+          }
+          return res.status(200).send('OK');
+        }
+
+        // Check if first-time user
+        const userDoc = await usersRef.doc(from).get();
+        const firstTime = !userDoc.exists || !userDoc.data().greeted;
+
+        // Send welcome template for first-time users
+        if (firstTime) {
+          const welcomeTemplate = await usersRef.firestore.collection('whatsapp_templates')
+            .doc('welcome_message').get();
+          
+          if (welcomeTemplate.exists) {
+            await usersRef.doc(from).set({ greeted: true }, { merge: true });
+            await sendInteractiveMessage(from, welcomeTemplate.data().content);
+            return res.status(200).send('OK');
+          }
+        }
+
+        // Check for matching template
+        const template = await findMatchingTemplate(userMessage);
+        if (template) {
+          await sendInteractiveMessage(from, template.content);
+          return res.status(200).send('OK');
+        }
+
+        // Default AI response
+        const aiResponse = await generateAIResponse(userMessage);
+        await sendTextMessage(from, aiResponse, messageId);
       }
-      return res.status(200).send('OK');
+    } catch (error) {
+      console.error('Error handling message:', error);
+      await sendTextMessage(from, "Oops! Something went wrong. Please try again.", messageId);
     }
-
-    // Check if first-time user
-    const userDoc = await usersRef.doc(from).get();
-    const firstTime = !userDoc.exists || !userDoc.data().greeted;
-
-    // Send welcome template for first-time users
-    if (firstTime) {
-      const welcomeTemplate = await usersRef.firestore.collection('whatsapp_templates')
-        .doc('welcome_message').get();
-      
-      if (welcomeTemplate.exists) {
-        await usersRef.doc(from).set({ greeted: true }, { merge: true });
-        await sendInteractiveMessage(from, welcomeTemplate.data().content);
-        return res.status(200).send('OK');
-      }
-    }
-
-    // Check for matching template
-    const template = await findMatchingTemplate(userMessage);
-    if (template) {
-      await sendInteractiveMessage(from, template.content);
-      return res.status(200).send('OK');
-    }
-
-    // Default AI response
-    const aiResponse = await generateAIResponse(userMessage);
-    await sendTextMessage(from, aiResponse);
-
-  } catch (error) {
-    console.error('Error handling message:', error);
-    await sendTextMessage(from, "Oops! Something went wrong. Please try again.");
   }
 
   res.status(200).send('OK');
 });
+
+// Handle list reply selections
+async function handleListReply(from, messageId, selectedId, selectedTitle) {
+  switch (selectedId) {
+    case 'support_option':
+      await sendTextMessage(
+        from, 
+        "Please describe your support issue and we'll create a ticket for you.",
+        messageId
+      );
+      break;
+    case 'products_option':
+      await sendTextMessage(
+        from,
+        "Here are our current products:\n\n1. Product A\n2. Product B\n3. Product C",
+        messageId
+      );
+      break;
+    case 'account_option':
+      await sendTextMessage(
+        from,
+        "For account help, please visit our website or reply with your specific question.",
+        messageId
+      );
+      break;
+    default:
+      await sendTextMessage(
+        from,
+        `You selected: ${selectedTitle}. How can we assist you further?`,
+        messageId
+      );
+  }
+}
+
+// Handle button reply clicks
+async function handleButtonReply(from, messageId, selectedId, selectedTitle) {
+  switch (selectedId) {
+    case 'support_button':
+      await sendTextMessage(
+        from, 
+        "Please describe your support issue and we'll create a ticket for you.",
+        messageId
+      );
+      break;
+    default:
+      await sendTextMessage(
+        from,
+        `You clicked: ${selectedTitle}. How can we assist you further?`,
+        messageId
+      );
+  }
+}
 
 // Helper functions
 async function findMatchingTemplate(message) {
@@ -288,15 +387,21 @@ async function generateAIResponse(message) {
 }
 
 // Messaging functions
-async function sendTextMessage(to, text) {
+async function sendTextMessage(to, text, contextMessageId = null) {
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body: text }
+  };
+
+  if (contextMessageId) {
+    payload.context = { message_id: contextMessageId };
+  }
+
   await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: text }
-    },
+    payload,
     {
       headers: {
         Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -316,7 +421,7 @@ async function sendInteractiveMessage(to, interactiveContent) {
         recipient_type: 'individual',
         to,
         type: 'interactive',
-        interactive: interactiveContent // Directly use the interactive content
+        interactive: interactiveContent
       },
       {
         headers: {
