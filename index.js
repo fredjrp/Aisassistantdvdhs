@@ -19,7 +19,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Default welcome template
+// Default welcome template with exact WhatsApp API format
 const WELCOME_TEMPLATE = {
   name: "welcome_message",
   description: "Default welcome message for new clients",
@@ -27,12 +27,13 @@ const WELCOME_TEMPLATE = {
   content: {
     messaging_product: "whatsapp",
     recipient_type: "individual",
+    to: "", // This will be set when sending
     type: "interactive",
     interactive: {
       type: "list",
       header: {
         type: "text",
-        text: "Welcome to Fred's Services! 👋"
+        text: "Welcome to Freds Services"
       },
       body: {
         text: "How can we help you today?"
@@ -395,6 +396,7 @@ async function generateAIResponse(message) {
 async function sendTextMessage(to, text, contextMessageId = null) {
   const payload = {
     messaging_product: 'whatsapp',
+    recipient_type: 'individual',
     to,
     type: 'text',
     text: { body: text }
@@ -419,11 +421,16 @@ async function sendTextMessage(to, text, contextMessageId = null) {
 
 async function sendInteractiveMessage(to, templateContent) {
   try {
-    const payload = {
-      messaging_product: "whatsapp",  // <-- add this here
-      ...templateContent,
-      to // ensure correct recipient
-    };
+    // Create a deep copy of the template content to avoid modifying the original
+    const payload = JSON.parse(JSON.stringify(templateContent));
+    
+    // Set the recipient and ensure proper format
+    payload.to = to;
+    
+    // Ensure required fields are present in the exact WhatsApp API format
+    if (!payload.interactive) {
+      throw new Error("Invalid template format: missing interactive property");
+    }
 
     const response = await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
