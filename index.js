@@ -25,7 +25,7 @@ const WELCOME_TEMPLATE = {
   description: "Default welcome message for new clients",
   triggers: ["hello", "hi", "hey", "start"],
   content: {
-    type: "interactive",
+    type: "LIST",
     header: {
       type: "text",
       text: "Welcome to Fred's Services! 👋"
