@@ -10,7 +10,7 @@ const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "your_custom_to
 
 app.use(express.json());
 
-// Email transporter setup
+// Email transporter setup (unchanged)
 const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || 'gmail',
   auth: {
@@ -19,65 +19,43 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// AI Assistant Configuration
-const AI_CONFIG = {
-  name: "Linda",
-  role: "IT Support and Shopping Assistant",
-  restrictions: [
-    "Only respond to IT-related queries",
-    "For shopping, only provide links to products",
-    "Politely decline all other requests"
-  ],
-  shoppingBaseUrl: process.env.SHOPPING_URL || "https://example.com/products"
-};
-
-// Default welcome template for Linda
+// Default welcome template
 const WELCOME_TEMPLATE = {
   name: "welcome_message",
-  description: "Default welcome message from Linda",
+  description: "Default welcome message for new clients",
   triggers: ["hello", "hi", "hey", "start"],
   content: {
     type: "interactive",
     header: {
       type: "text",
-      text: `Hi! I'm ${AI_CONFIG.name} 👩‍💻`
+      text: "Welcome to Fred's Services! 👋"
     },
     body: {
-      text: `I'm your ${AI_CONFIG.role}. How can I help you today?`
+      text: "How can we help you today?"
     },
     footer: {
-      text: "I specialize in IT support and can share product links"
+      text: "Select an option below to get started"
     },
     action: {
       button: "Menu Options",
       sections: [
         {
-          title: "IT Support",
+          title: "Main Menu",
           rows: [
             {
-              id: "it_support_option",
-              title: "IT Help",
-              description: "Get assistance with technology issues"
+              id: "support_option",
+              title: "Get Support",
+              description: "Contact our support team"
             },
             {
-              id: "troubleshooting_option",
-              title: "Troubleshooting",
-              description: "Help solving technical problems"
-            }
-          ]
-        },
-        {
-          title: "Shopping",
-          rows: [
-            {
-              id: "laptops_option",
-              title: "Laptops",
-              description: "Browse our laptop collection"
+              id: "products_option",
+              title: "View Products",
+              description: "See what we offer"
             },
             {
-              id: "accessories_option",
-              title: "Accessories",
-              description: "See tech accessories"
+              id: "account_option",
+              title: "Account Help",
+              description: "Manage your account"
             }
           ]
         }
@@ -103,7 +81,7 @@ async function initializeTemplates() {
 
 // Routes
 app.get('/', (req, res) => {
-  res.send(`WhatsApp Business API with ${AI_CONFIG.name} AI Assistant`);
+  res.send('WhatsApp Business API with Auto Templates');
 });
 
 app.get('/webhook', (req, res) => {
@@ -120,7 +98,74 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Webhook handler with AI restrictions
+// Template management endpoints
+app.get('/templates', async (req, res) => {
+  try {
+    const templates = [];
+    const snapshot = await usersRef.firestore.collection('whatsapp_templates').get();
+    snapshot.forEach(doc => {
+      templates.push({ id: doc.id, ...doc.data() });
+    });
+    res.json(templates);
+  } catch (error) {
+    console.error('Error fetching templates:', error);
+    res.status(500).send('Error fetching templates');
+  }
+});
+
+app.post('/templates', async (req, res) => {
+  try {
+    const newTemplate = req.body;
+    await usersRef.firestore.collection('whatsapp_templates').doc(newTemplate.name).set(newTemplate);
+    res.status(201).send(`Template ${newTemplate.name} created`);
+  } catch (error) {
+    console.error('Error creating template:', error);
+    res.status(500).send('Error creating template');
+  }
+});
+
+// Support ticket functions (unchanged)
+async function createSupportTicket(from, userMessage) {
+  const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
+  
+  await usersRef.doc(from)
+    .collection('tickets')
+    .doc(trackingId)
+    .set({
+      id: trackingId,
+      issue: userMessage,
+      status: 'pending',
+      createdAt: new Date(),
+      resolved: false,
+      from,
+      lastUpdated: new Date()
+    });
+
+  await sendSupportEmail(from, userMessage, trackingId);
+  return trackingId;
+}
+
+async function sendSupportEmail(from, userMessage, trackingId) {
+  try {
+    const info = await transporter.sendMail({
+      from: `"Fred AI Support" <${process.env.EMAIL_USER}>`,
+      to: process.env.SUPPORT_EMAIL || 'support@yourdomain.com',
+      subject: `New Support Ticket: ${trackingId}`,
+      text: `New support ticket created:\n\nFrom: ${from}\nIssue: ${userMessage}\nTracking ID: ${trackingId}`,
+      html: `
+        <h1>New Support Ticket: ${trackingId}</h1>
+        <p><strong>From:</strong> ${from}</p>
+        <p><strong>Issue:</strong> ${userMessage}</p>
+        <p><strong>Tracking ID:</strong> ${trackingId}</p>
+      `
+    });
+    console.log("📧 Support email sent:", info.messageId);
+  } catch (error) {
+    console.error("❌ Failed to send support email:", error);
+  }
+}
+
+// Webhook handler with template matching
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body;
 
@@ -131,12 +176,30 @@ app.post('/webhook', async (req, res) => {
   const message = entry[0].changes[0].value.messages[0];
   const from = message.from;
   const userMessage = message.type === 'text' ? message.text.body : '';
-  const messageId = message.id;
 
   console.log(`📩 Message from ${from}: ${userMessage}`);
 
   try {
-    // Check for first-time user
+    // Check for ticket status requests
+    if (userMessage.toLowerCase().startsWith('track')) {
+      const trackingId = userMessage.split(' ')[1]?.trim();
+      if (!trackingId) {
+        await sendTextMessage(from, "⚠️ Please include a tracking ID");
+        return res.status(200).send('OK');
+      }
+
+      const ticket = await checkTicketStatus(from, trackingId);
+      if (ticket.error) {
+        await sendTextMessage(from, ticket.error);
+      } else {
+        await sendTextMessage(from, 
+          `📋 Ticket #${ticket.id}\nStatus: ${ticket.status}\nIssue: ${ticket.issue}`
+        );
+      }
+      return res.status(200).send('OK');
+    }
+
+    // Check if first-time user
     const userDoc = await usersRef.doc(from).get();
     const firstTime = !userDoc.exists || !userDoc.data().greeted;
 
@@ -152,116 +215,76 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Handle interactive messages
-    if (message.type === 'interactive') {
-      if (message.interactive.type === 'list_reply') {
-        const selectedId = message.interactive.list_reply.id;
-        
-        // Handle IT support options
-        if (selectedId.includes('it_')) {
-          await replyMessage(from, "Please describe your IT issue and I'll do my best to help.", messageId);
-          return res.status(200).send('OK');
-        }
-        
-        // Handle shopping options
-        if (selectedId.includes('_option')) {
-          const productType = selectedId.split('_')[0];
-          const shoppingLink = `${AI_CONFIG.shoppingBaseUrl}/${productType}`;
-          await replyMessage(from, `You can browse our ${productType} here: ${shoppingLink}`, messageId);
-          return res.status(200).send('OK');
-        }
-      }
+    // Check for matching template
+    const template = await findMatchingTemplate(userMessage);
+    if (template) {
+      await sendInteractiveMessage(from, template.content);
+      return res.status(200).send('OK');
     }
 
-    // Process text messages with AI
-    if (message.type === 'text') {
-      const aiResponse = await generateAIResponse(userMessage);
-      await replyMessage(from, aiResponse, messageId);
-    }
+    // Default AI response
+    const aiResponse = await generateAIResponse(userMessage);
+    await sendTextMessage(from, aiResponse);
 
   } catch (error) {
     console.error('Error handling message:', error);
-    await replyMessage(from, "Oops! Something went wrong. Please try again.", messageId);
+    await sendTextMessage(from, "Oops! Something went wrong. Please try again.");
   }
 
   res.status(200).send('OK');
 });
 
-// AI Response Generator with restrictions
-async function generateAIResponse(message) {
-  // Check for shopping-related keywords
-  const shoppingKeywords = ['buy', 'purchase', 'shop', 'product', 'laptop', 'accessory'];
-  const isShoppingRequest = shoppingKeywords.some(keyword => 
-    message.toLowerCase().includes(keyword)
-  );
-
-  if (isShoppingRequest) {
-    const productType = extractProductType(message);
-    if (productType) {
-      return `You can browse our ${productType} collection here: ${AI_CONFIG.shoppingBaseUrl}/${productType}`;
-    }
-    return `Here's our main shopping page: ${AI_CONFIG.shoppingBaseUrl}`;
-  }
-
-  // Check if message is IT-related
-  const itKeywords = ['computer', 'tech', 'it', 'software', 'hardware', 'install', 'error', 'problem', 'fix'];
-  const isItRelated = itKeywords.some(keyword => 
-    message.toLowerCase().includes(keyword)
-  );
-
-  if (!isItRelated) {
-    return `I'm sorry, as ${AI_CONFIG.name} I can only assist with IT-related questions or provide shopping links. Is there something technical I can help you with?`;
-  }
-
-  // Generate IT support response
-  try {
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "mistralai/mistral-7b-instruct",
-        messages: [{
-          role: "system",
-          content: `You are ${AI_CONFIG.name}, a professional IT support assistant. 
-                  Only respond to IT-related questions. For all other requests, politely decline.
-                  Keep responses concise and technical.`
-        }, {
-          role: "user",
-          content: message
-        }],
-        max_tokens: 500,
-        temperature: 0.7
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-    
-    return response.data.choices[0].message.content;
-  } catch (error) {
-    console.error('AI API error:', error);
-    return "I'm having trouble processing your request. Please try again later.";
-  }
-}
-
-function extractProductType(message) {
-  const products = {
-    'laptop': 'laptops',
-    'computer': 'laptops',
-    'accessory': 'accessories',
-    'mouse': 'accessories',
-    'keyboard': 'accessories',
-    'monitor': 'accessories'
-  };
-
-  for (const [keyword, productType] of Object.entries(products)) {
-    if (message.toLowerCase().includes(keyword)) {
-      return productType;
+// Helper functions
+async function findMatchingTemplate(message) {
+  const snapshot = await usersRef.firestore.collection('whatsapp_templates').get();
+  for (const doc of snapshot.docs) {
+    const template = doc.data();
+    if (template.triggers?.some(trigger => 
+      message.toLowerCase().includes(trigger.toLowerCase())
+    )) {
+      return { id: doc.id, ...template };
     }
   }
   return null;
+}
+
+async function checkTicketStatus(from, trackingId) {
+  try {
+    const ticketDoc = await usersRef.doc(from)
+      .collection('tickets')
+      .doc(trackingId)
+      .get();
+
+    return ticketDoc.exists ? ticketDoc.data() : { error: `Ticket ${trackingId} not found` };
+  } catch (error) {
+    console.error('Error checking ticket:', error);
+    return { error: "Failed to check ticket status" };
+  }
+}
+
+async function generateAIResponse(message) {
+  const response = await axios.post(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      model: "mistralai/mistral-7b-instruct",
+      messages: [{
+        role: "system",
+        content: "You are a helpful WhatsApp assistant. Keep responses concise."
+      }, {
+        role: "user",
+        content: message
+      }],
+      max_tokens: 1000,
+      temperature: 0.7
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+  return response.data.choices[0].message.content;
 }
 
 // Messaging functions
@@ -284,28 +307,6 @@ async function sendTextMessage(to, text) {
   console.log("💬 Sent text to", to);
 }
 
-async function replyMessage(to, body, messageId) {
-  await axios({
-    url: `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    data: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: {
-        body
-      },
-      context: {
-        message_id: messageId
-      }
-    })
-  });
-}
-
 async function sendInteractiveMessage(to, interactiveContent) {
   try {
     const response = await axios.post(
@@ -315,7 +316,7 @@ async function sendInteractiveMessage(to, interactiveContent) {
         recipient_type: 'individual',
         to,
         type: 'interactive',
-        interactive: interactiveContent
+        interactive: interactiveContent // Directly use the interactive content
       },
       {
         headers: {
@@ -335,9 +336,8 @@ async function sendInteractiveMessage(to, interactiveContent) {
 // Initialize server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  await initializeTemplates();
+  await initializeTemplates(); // Create default templates on startup
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🤖 AI Assistant: ${AI_CONFIG.name}`);
   console.log("📞 PHONE ID:", process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("🔐 TOKEN:", WHATSAPP_ACCESS_TOKEN?.slice(0, 6) + '...');
 });
