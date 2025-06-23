@@ -25,7 +25,7 @@ const WELCOME_TRIGGERS = ["hello", "hi", "hey", "start"];
 // Interactive message content
 const WELCOME_INTERACTIVE_MESSAGE = {
   messaging_product: "whatsapp",
-  to: "",
+  to: "+254703738935",
   type: "interactive",
   interactive: {
     type: "list",
