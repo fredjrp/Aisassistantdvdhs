@@ -419,10 +419,10 @@ async function sendTextMessage(to, text, contextMessageId = null) {
 
 async function sendInteractiveMessage(to, templateContent) {
   try {
-    // Remove wrapping if already includes full payload
     const payload = {
+      messaging_product: "whatsapp",  // <-- add this here
       ...templateContent,
-      to // override to ensure correct recipient
+      to // ensure correct recipient
     };
 
     const response = await axios.post(
