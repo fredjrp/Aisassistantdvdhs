@@ -1,41 +1,51 @@
 require('dotenv').config();
-
 const express = require('express');
 const axios = require('axios');
+const admin = require('firebase-admin');
+const nodemailer = require('nodemailer');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
 
-// Load environment variables
+// 🌍 ENV
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
+const ALERT_EMAIL = process.env.ALERT_EMAIL;
 
-if (!WHATSAPP_ACCESS_TOKEN || !PHONE_NUMBER_ID || !WEBHOOK_VERIFY_TOKEN) {
-  console.error("❌ Missing required environment variables.");
-  process.exit(1);
-}
+// 🔥 Initialize Firebase
+const serviceAccount = require('./firebase.json');
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+const db = admin.firestore();
 
-// Home route
-app.get('/', (req, res) => {
-  res.send('✅ WhatsApp Webhook is running');
+// 📧 Nodemailer setup
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: EMAIL_USER,
+    pass: EMAIL_PASS,
+  },
 });
 
-// Webhook verification
+// ✅ Root
+app.get('/', (req, res) => {
+  res.send('✅ WhatsApp Webhook + Firebase + AI + Email running');
+});
+
+// ✅ Webhook verify
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
-  if (mode && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log('✅ Webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
+  if (mode && token === WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
+  res.sendStatus(403);
 });
 
-// Webhook event handler
+// ✅ Webhook listener
 app.post('/webhook', async (req, res) => {
   const entry = req.body.entry?.[0];
   const changes = entry?.changes?.[0];
@@ -49,13 +59,29 @@ app.post('/webhook', async (req, res) => {
   if (message) {
     const from = message.from;
     const type = message.type;
+    const text = message.text?.body?.toLowerCase();
+    const messageId = message.id;
+
+    // 🧠 Log to Firebase
+    await db.collection('whatsapp_logs').add({
+      from,
+      type,
+      message,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
 
     if (type === 'text') {
-      const text = message.text.body.toLowerCase();
-
-      if (text === 'hello') await replyMessage(from, 'Hello. How are you?', message.id);
+      if (text === 'hello') await replyMessage(from, 'Hello. How are you?', messageId);
       else if (text === 'list') await sendList(from);
       else if (text === 'buttons') await sendReplyButtons(from);
+      else if (text === 'help') {
+        await sendMessage(from, 'We are here to help. An agent has been notified.');
+        await sendEmailAlert(from, 'User requested help');
+      } else {
+        // 🧠 AI Fallback
+        const aiReply = await getAIResponse(text);
+        await sendMessage(from, aiReply);
+      }
     }
 
     if (type === 'interactive') {
@@ -73,7 +99,8 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Text message
+// ✅ Message functions (NO CHANGE TO YOUR LIST/BUTTON DESIGN)
+
 async function sendMessage(to, body) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -92,7 +119,6 @@ async function sendMessage(to, body) {
   }
 }
 
-// Reply to a message ID
 async function replyMessage(to, body, messageId) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -112,7 +138,6 @@ async function replyMessage(to, body, messageId) {
   }
 }
 
-// Send interactive list
 async function sendList(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -121,42 +146,22 @@ async function sendList(to) {
       type: 'interactive',
       interactive: {
         type: 'list',
-        header: {
-          type: 'text',
-          text: '📋 Menu'
-        },
-        body: {
-          text: 'Choose an option from the list:'
-        },
-        footer: {
-          text: 'Powered by Fred'
-        },
+        header: { type: 'text', text: '📋 Menu' },
+        body: { text: 'Choose an option from the list:' },
+        footer: { text: 'Powered by Fred' },
         action: {
           button: 'Open Menu',
           sections: [
             {
               title: 'Main Options',
               rows: [
-                {
-                  id: 'opt1',
-                  title: 'First Option',
-                  description: 'This is the first option'
-                },
-                {
-                  id: 'opt2',
-                  title: 'Second Option',
-                  description: 'This is the second option'
-                }
+                { id: 'opt1', title: 'First Option', description: 'This is the first option' },
+                { id: 'opt2', title: 'Second Option', description: 'This is the second option' }
               ]
             },
             {
               title: 'Other',
-              rows: [
-                {
-                  id: 'help',
-                  title: 'Help & Support'
-                }
-              ]
+              rows: [{ id: 'help', title: 'Help & Support' }]
             }
           ]
         }
@@ -172,7 +177,6 @@ async function sendList(to) {
   }
 }
 
-// Send interactive buttons
 async function sendReplyButtons(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -181,32 +185,13 @@ async function sendReplyButtons(to) {
       type: 'interactive',
       interactive: {
         type: 'button',
-        header: {
-          type: 'text',
-          text: '⚡ Quick Action'
-        },
-        body: {
-          text: 'Click a button below:'
-        },
-        footer: {
-          text: 'Fred\'s Assistant'
-        },
+        header: { type: 'text', text: '⚡ Quick Action' },
+        body: { text: 'Click a button below:' },
+        footer: { text: 'Fred\'s Assistant' },
         action: {
           buttons: [
-            {
-              type: 'reply',
-              reply: {
-                id: 'btn1',
-                title: 'Option A'
-              }
-            },
-            {
-              type: 'reply',
-              reply: {
-                id: 'btn2',
-                title: 'Option B'
-              }
-            }
+            { type: 'reply', reply: { id: 'btn1', title: 'Option A' } },
+            { type: 'reply', reply: { id: 'btn2', title: 'Option B' } }
           ]
         }
       }
@@ -221,7 +206,44 @@ async function sendReplyButtons(to) {
   }
 }
 
-// Render/production compatible port
+// ✅ Email alert
+async function sendEmailAlert(from, subjectText) {
+  try {
+    await transporter.sendMail({
+      from: `"FredBot Alerts" <${EMAIL_USER}>`,
+      to: ALERT_EMAIL,
+      subject: `🚨 Alert: ${subjectText}`,
+      text: `User ${from} triggered an alert.`,
+    });
+    console.log('📧 Email sent to admin');
+  } catch (error) {
+    console.error('❌ Email error:', error.message);
+  }
+}
+
+// ✅ OpenRouter AI
+async function getAIResponse(userText) {
+  try {
+    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+      model: "mistral/mistral-7b-instruct",
+      messages: [
+        { role: "system", content: "You are a helpful WhatsApp assistant." },
+        { role: "user", content: userText }
+      ]
+    }, {
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return res.data.choices?.[0]?.message?.content || "🤖 Sorry, I couldn't respond.";
+  } catch (error) {
+    console.error('❌ AI Error:', error.response?.data || error.message);
+    return "🤖 Sorry, I had trouble responding.";
+  }
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
