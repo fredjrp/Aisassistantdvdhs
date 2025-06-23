@@ -229,8 +229,10 @@ async function sendEmailAlert(from, subjectText) {
 // ✅ OpenRouter AI
 async function getAIResponse(userText) {
   try {
+    console.log("🧠 AI Input:", userText);
+
     const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistral/mistral-7b-instruct",
+      model: "mistralai/mistral-7b-instruct",
       messages: [
         { role: "system", content: "You are a helpful WhatsApp assistant." },
         { role: "user", content: userText }
@@ -239,15 +241,22 @@ async function getAIResponse(userText) {
       headers: {
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 100000
     });
 
-    return res.data.choices?.[0]?.message?.content || "🤖 Sorry, I couldn't respond.";
+    const responseText = res.data.choices?.[0]?.message?.content || "🤖 Sorry, I couldn't respond.";
+    return responseText;
   } catch (error) {
-    console.error('❌ AI Error:', error.response?.data || error.message);
+    console.error('❌ AI Error:', {
+      data: error?.response?.data,
+      status: error?.response?.status,
+      message: error?.message,
+    });
     return "🤖 Sorry, I had trouble responding.";
   }
 }
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
