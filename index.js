@@ -25,41 +25,46 @@ const WELCOME_TEMPLATE = {
   description: "Default welcome message for new clients",
   triggers: ["hello", "hi", "hey", "start"],
   content: {
-    type: "LIST",
-    header: {
-      type: "text",
-      text: "Welcome to Fred's Services! 👋"
-    },
-    body: {
-      text: "How can we help you today?"
-    },
-    footer: {
-      text: "Select an option below to get started"
-    },
-    action: {
-      button: "Menu Options",
-      sections: [
-        {
-          title: "Main Menu",
-          rows: [
-            {
-              id: "support_option",
-              title: "Get Support",
-              description: "Contact our support team"
-            },
-            {
-              id: "products_option",
-              title: "View Products",
-              description: "See what we offer"
-            },
-            {
-              id: "account_option",
-              title: "Account Help",
-              description: "Manage your account"
-            }
-          ]
-        }
-      ]
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    type: "interactive",
+    interactive: {
+      type: "list",
+      header: {
+        type: "text",
+        text: "Welcome to Fred's Services! 👋"
+      },
+      body: {
+        text: "How can we help you today?"
+      },
+      footer: {
+        text: "Select an option below to get started"
+      },
+      action: {
+        button: "Menu Options",
+        sections: [
+          {
+            title: "Main Menu",
+            rows: [
+              {
+                id: "support_option",
+                title: "Get Support",
+                description: "Contact our support team"
+              },
+              {
+                id: "products_option",
+                title: "View Products",
+                description: "See what we offer"
+              },
+              {
+                id: "account_option",
+                title: "Account Help",
+                description: "Manage your account"
+              }
+            ]
+          }
+        ]
+      }
     }
   }
 };
