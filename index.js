@@ -53,11 +53,16 @@ app.post('/webhook', async (req, res) => {
     const messageId = message.id;
 
     // Save last active time
-    await db.collection('users').doc(from).set({
-      profileName,
-      lastActive: Date.now(),
-      lastMessage: text
-    }, { merge: true });
+    const updateData = {
+  lastActive: Date.now(),
+  lastMessage: text
+};
+
+if (profileName !== undefined) {
+  updateData.profileName = profileName;
+}
+
+await db.collection('users').doc(from).set(updateData, { merge: true });
 
     await db.collection('whatsapp_logs').add({
       from, type, message,
