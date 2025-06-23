@@ -2,24 +2,15 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
-const { initializeApp } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
-const admin = require('firebase-admin');
-
-// Initialize Firebase
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-const db = getFirestore();
-
 const app = express();
+const usersRef = require('./firebase'); // Keep your existing Firebase initialization
+
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "your_custom_token";
 
 app.use(express.json());
 
-// Email transporter setup
+// Email transporter setup (unchanged)
 const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || 'gmail',
   auth: {
@@ -28,9 +19,9 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Routes
+// Routes (unchanged)
 app.get('/', (req, res) => {
-  res.send('WhatsApp Business API with Firebase Templates');
+  res.send('WhatsApp Business API with Node.js and Webhooks');
 });
 
 app.get('/webhook', (req, res) => {
@@ -47,11 +38,11 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Template endpoints
+// New template endpoints
 app.get('/templates', async (req, res) => {
   try {
     const templates = [];
-    const snapshot = await db.collection('whatsapp_templates').get();
+    const snapshot = await usersRef.firestore.collection('whatsapp_templates').get();
     snapshot.forEach(doc => {
       templates.push({ id: doc.id, ...doc.data() });
     });
@@ -65,14 +56,14 @@ app.get('/templates', async (req, res) => {
 app.get('/send-template/:templateName/:phone', async (req, res) => {
   try {
     const { templateName, phone } = req.params;
-    const docRef = db.collection('whatsapp_templates').doc(templateName);
-    const docSnap = await docRef.get();
+    const templateRef = usersRef.firestore.collection('whatsapp_templates').doc(templateName);
+    const templateSnap = await templateRef.get();
 
-    if (!docSnap.exists) {
+    if (!templateSnap.exists) {
       return res.status(404).send('Template not found');
     }
 
-    const template = docSnap.data();
+    const template = templateSnap.data();
     await sendInteractiveMessage(phone, template.content);
     res.send(`Template "${templateName}" sent to ${phone}`);
   } catch (error) {
@@ -81,19 +72,22 @@ app.get('/send-template/:templateName/:phone', async (req, res) => {
   }
 });
 
-// Support ticket functions
+// Support ticket functions (unchanged structure)
 async function createSupportTicket(from, userMessage) {
   const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
   
-  await db.collection('support_tickets').doc(trackingId).set({
-    id: trackingId,
-    issue: userMessage,
-    status: 'pending',
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    resolved: false,
-    from,
-    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-  });
+  await usersRef.doc(from)
+    .collection('tickets')
+    .doc(trackingId)
+    .set({
+      id: trackingId,
+      issue: userMessage,
+      status: 'pending',
+      createdAt: new Date(),
+      resolved: false,
+      from,
+      lastUpdated: new Date()
+    });
 
   await sendSupportEmail(from, userMessage, trackingId);
   return trackingId;
@@ -102,10 +96,16 @@ async function createSupportTicket(from, userMessage) {
 async function sendSupportEmail(from, userMessage, trackingId) {
   try {
     const info = await transporter.sendMail({
-      from: `"Support Bot" <${process.env.EMAIL_USER}>`,
-      to: process.env.SUPPORT_EMAIL,
+      from: `"Fred AI Support" <${process.env.EMAIL_USER}>`,
+      to: process.env.SUPPORT_EMAIL || 'support@yourdomain.com',
       subject: `New Support Ticket: ${trackingId}`,
-      text: `New ticket from ${from}:\n\n${userMessage}\n\nTracking ID: ${trackingId}`
+      text: `New support ticket created:\n\nFrom: ${from}\nIssue: ${userMessage}\nTracking ID: ${trackingId}`,
+      html: `
+        <h1>New Support Ticket: ${trackingId}</h1>
+        <p><strong>From:</strong> ${from}</p>
+        <p><strong>Issue:</strong> ${userMessage}</p>
+        <p><strong>Tracking ID:</strong> ${trackingId}</p>
+      `
     });
     console.log("📧 Support email sent:", info.messageId);
   } catch (error) {
@@ -113,7 +113,7 @@ async function sendSupportEmail(from, userMessage, trackingId) {
   }
 }
 
-// Webhook handler
+// Updated webhook handler
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body;
 
@@ -136,7 +136,7 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      const ticket = await checkTicketStatus(trackingId);
+      const ticket = await checkTicketStatus(from, trackingId);
       if (ticket.error) {
         await sendTextMessage(from, ticket.error);
       } else {
@@ -168,7 +168,7 @@ app.post('/webhook', async (req, res) => {
 
 // Helper functions
 async function findMatchingTemplate(message) {
-  const snapshot = await db.collection('whatsapp_templates').get();
+  const snapshot = await usersRef.firestore.collection('whatsapp_templates').get();
   for (const doc of snapshot.docs) {
     const template = doc.data();
     if (template.triggers?.some(trigger => 
@@ -180,11 +180,14 @@ async function findMatchingTemplate(message) {
   return null;
 }
 
-async function checkTicketStatus(trackingId) {
+async function checkTicketStatus(from, trackingId) {
   try {
-    const docRef = db.collection('support_tickets').doc(trackingId);
-    const docSnap = await docRef.get();
-    return docSnap.exists ? docSnap.data() : { error: `Ticket ${trackingId} not found` };
+    const ticketDoc = await usersRef.doc(from)
+      .collection('tickets')
+      .doc(trackingId)
+      .get();
+
+    return ticketDoc.exists ? ticketDoc.data() : { error: `Ticket ${trackingId} not found` };
   } catch (error) {
     console.error('Error checking ticket:', error);
     return { error: "Failed to check ticket status" };
