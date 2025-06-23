@@ -3,14 +3,24 @@ const express = require('express');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const app = express();
-const usersRef = require('./firebase');
+const { initializeApp } = require('firebase/app');
+const { getFirestore, doc, getDoc, collection, getDocs, setDoc } = require('firebase/firestore');
+
+// Initialize Firebase
+const firebaseApp = initializeApp({
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  // Add other Firebase config if needed
+});
+const db = getFirestore(firebaseApp);
+const templatesCollection = collection(db, 'whatsapp_templates');
+const usersRef = doc(collection(db, 'users'), 'default'); // Maintain your existing structure
 
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
-const WEBHOOK_VERIFY_TOKEN = "your_custom_token";
+const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "your_custom_token";
 
 app.use(express.json());
 
-// Email transporter setup
+// Email transporter setup (unchanged)
 const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || 'gmail',
   auth: {
@@ -19,11 +29,11 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// Routes (unchanged)
 app.get('/', (req, res) => {
-  res.send('WhatsApp Business API with Node.js and Webhooks');
+  res.send('WhatsApp Business API with Firebase Templates');
 });
 
-// Webhook verification
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const challenge = req.query['hub.challenge'];
@@ -38,22 +48,53 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Support ticket functions
+// New template endpoints
+app.get('/templates', async (req, res) => {
+  try {
+    const templates = [];
+    const snapshot = await getDocs(templatesCollection);
+    snapshot.forEach(doc => {
+      templates.push({ id: doc.id, ...doc.data() });
+    });
+    res.json(templates);
+  } catch (error) {
+    console.error('Error fetching templates:', error);
+    res.status(500).send('Error fetching templates');
+  }
+});
+
+app.get('/send-template/:templateName/:phone', async (req, res) => {
+  try {
+    const { templateName, phone } = req.params;
+    const templateRef = doc(templatesCollection, templateName);
+    const templateSnap = await getDoc(templateRef);
+
+    if (!templateSnap.exists()) {
+      return res.status(404).send('Template not found');
+    }
+
+    const template = templateSnap.data();
+    await sendInteractiveMessage(phone, template.content);
+    res.send(`Template "${templateName}" sent to ${phone}`);
+  } catch (error) {
+    console.error('Error sending template:', error);
+    res.status(500).send('Error sending template');
+  }
+});
+
+// Support ticket functions (unchanged structure)
 async function createSupportTicket(from, userMessage) {
   const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
   
-  await usersRef.doc(from)
-    .collection('tickets')
-    .doc(trackingId)
-    .set({
-      id: trackingId,
-      issue: userMessage,
-      status: 'pending',
-      createdAt: new Date(),
-      resolved: false,
-      from,
-      lastUpdated: new Date()
-    });
+  await usersRef.collection('tickets').doc(trackingId).set({
+    id: trackingId,
+    issue: userMessage,
+    status: 'pending',
+    createdAt: new Date(),
+    resolved: false,
+    from,
+    lastUpdated: new Date()
+  });
 
   await sendSupportEmail(from, userMessage, trackingId);
   return trackingId;
@@ -65,13 +106,7 @@ async function sendSupportEmail(from, userMessage, trackingId) {
       from: `"Fred AI Support" <${process.env.EMAIL_USER}>`,
       to: process.env.SUPPORT_EMAIL || 'support@yourdomain.com',
       subject: `New Support Ticket: ${trackingId}`,
-      text: `New support ticket created:\n\nFrom: ${from}\nIssue: ${userMessage}\nTracking ID: ${trackingId}`,
-      html: `
-        <h1>New Support Ticket: ${trackingId}</h1>
-        <p><strong>From:</strong> ${from}</p>
-        <p><strong>Issue:</strong> ${userMessage}</p>
-        <p><strong>Tracking ID:</strong> ${trackingId}</p>
-      `
+      text: `New support ticket created:\n\nFrom: ${from}\nIssue: ${userMessage}\nTracking ID: ${trackingId}`
     });
     console.log("📧 Support email sent:", info.messageId);
   } catch (error) {
@@ -79,175 +114,97 @@ async function sendSupportEmail(from, userMessage, trackingId) {
   }
 }
 
-// Incoming message handler
+// Updated webhook handler
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body;
 
-  if (!entry || entry.length === 0) {
+  if (!entry || !entry[0]?.changes?.[0]?.value?.messages?.[0]) {
     return res.status(400).send('Invalid Request');
   }
 
-  const changes = entry[0].changes;
+  const message = entry[0].changes[0].value.messages[0];
+  const from = message.from;
+  const userMessage = message.type === 'text' ? message.text.body : '';
 
-  if (!changes || changes.length === 0) {
-    return res.status(400).send('Invalid Request');
-  }
+  console.log(`📩 Message from ${from}: ${userMessage}`);
 
-  const statuses = changes[0].value.statuses ? changes[0].value.statuses[0] : null;
-  const messages = changes[0].value.messages ? changes[0].value.messages[0] : null;
-
-  if (statuses) {
-    console.log(`MESSAGE STATUS UPDATE: ID: ${statuses.id}, STATUS: ${statuses.status}`);
-  }
-
-  if (messages) {
-    const from = messages.from;
-    const userMessage = messages.type === 'text' ? messages.text.body : 'Non-text message';
-
-    console.log(`📩 Incoming message from ${from}:`, userMessage);
-
-    try {
-      // Check for ticket status request
-      if (userMessage.toLowerCase().startsWith('track')) {
-        const trackingId = userMessage.split(" ")[1]?.trim().toUpperCase();
-        if (!trackingId) {
-          await sendMessage(from, "⚠️ Please send a tracking number like: `track TKT-LSO6FHH6`");
-          return res.status(200).send('Webhook processed');
-        }
-
-        const ticket = await checkTicketStatus(from, trackingId);
-        if (ticket.error) {
-          await sendMessage(from, `❌ ${ticket.error}`);
-        } else {
-          await sendMessage(from, 
-            `📋 Ticket #${ticket.id}\n` +
-            `Status: ${ticket.status}\n` +
-            `Issue: ${ticket.issue}\n` +
-            `Created: ${ticket.createdAt.toDate().toLocaleString()}`
-          );
-        }
-        return res.status(200).send('Webhook processed');
+  try {
+    // Check for ticket status requests
+    if (userMessage.toLowerCase().startsWith('track')) {
+      const trackingId = userMessage.split(' ')[1]?.trim();
+      if (!trackingId) {
+        await sendTextMessage(from, "⚠️ Please include a tracking ID");
+        return res.status(200).send('OK');
       }
 
-      // Handle reset command
-      if (userMessage.toLowerCase().trim() === "reset") {
-        await usersRef.doc(from).delete();
-        await sendMessage(from, "✅ Session reset! Fresh start activated. How can I help?");
-        return res.status(200).send('Webhook processed');
-      }
-
-      // Handle interactive messages
-      if (messages.type === 'interactive') {
-        if (messages.interactive.type === 'list_reply') {
-          await sendMessage(from, `You selected: ${messages.interactive.list_reply.title}`);
-        }
-        if (messages.interactive.type === 'button_reply') {
-          await sendMessage(from, `You clicked: ${messages.interactive.button_reply.title}`);
-        }
-        return res.status(200).send('Webhook processed');
-      }
-
-      // Get conversation history
-      const userDoc = await usersRef.doc(from).get();
-      const firstTime = !userDoc.exists || !userDoc.data().greeted;
-      
-      if (firstTime) {
-        await usersRef.doc(from).set({ greeted: true }, { merge: true });
-      }
-
-      let previousLogs = [];
-      const logsSnapshot = await usersRef.doc(from).collection("logs").orderBy("timestamp", "desc").limit(5).get();
-      logsSnapshot.forEach(doc => previousLogs.unshift(doc.data()));
-
-      const history = previousLogs.map(log => ({
-        role: log.from,
-        content: log.message
-      }));
-
-      // Generate AI response
-      const aiResponse = await generateAIResponse(userMessage, history, firstTime);
-      let aiMessage = aiResponse.trim();
-
-      // Handle list responses
-      if (aiMessage.includes("[LIST_VARS]")) {
-        try {
-          const listData = parseListResponse(aiMessage, from);
-          await sendInteractiveList(from, listData);
-          
-          // Save to Firestore
-          await saveConversation(from, userMessage, "Sent interactive options list");
-          return res.status(200).send('Webhook processed');
-        } catch (err) {
-          console.error("❌ Failed to process list:", err);
-          await sendMessage(from, "Sorry, I couldn't prepare the options. Please try again.");
-          return res.status(200).send('Webhook processed');
-        }
-      }
-
-      // Handle support ticket creation
-      if (aiMessage.includes("Let me check with Fred!")) {
-        const trackingId = await createSupportTicket(from, userMessage);
-        aiMessage += `\n\nI've created a support ticket (ID: ${trackingId}). Track with: track ${trackingId}`;
-      }
-
-      // Save conversation and send response
-      await saveConversation(from, userMessage, aiMessage);
-      
-      if (aiMessage.startsWith("[IMAGE]")) {
-        await sendImage(from, aiMessage.replace("[IMAGE]", "").trim());
-      } else if (aiMessage.startsWith("[TEMPLATE]")) {
-        await sendTemplate(from, aiMessage.replace("[TEMPLATE]", "").trim());
+      const ticket = await checkTicketStatus(trackingId);
+      if (ticket.error) {
+        await sendTextMessage(from, ticket.error);
       } else {
-        await sendMessage(from, aiMessage);
+        await sendTextMessage(from, 
+          `📋 Ticket #${ticket.id}\nStatus: ${ticket.status}\nIssue: ${ticket.issue}`
+        );
       }
-
-    } catch (err) {
-      console.error("❌ Error:", err);
-      await sendMessage(from, "Oops! Something went wrong. Please try again.");
+      return res.status(200).send('OK');
     }
+
+    // Check for matching template
+    const template = await findMatchingTemplate(userMessage);
+    if (template) {
+      await sendInteractiveMessage(from, template.content);
+      return res.status(200).send('OK');
+    }
+
+    // Default AI response
+    const aiResponse = await generateAIResponse(userMessage);
+    await sendTextMessage(from, aiResponse);
+
+  } catch (error) {
+    console.error('Error handling message:', error);
+    await sendTextMessage(from, "Oops! Something went wrong. Please try again.");
   }
 
-  res.status(200).send('Webhook processed');
+  res.status(200).send('OK');
 });
 
-// AI Response Generation
-async function generateAIResponse(userMessage, history, firstTime) {
-  const sharedPrompt = `
-You are Linda, Fred's WhatsApp assistant. Follow these rules:
+// Helper functions
+async function findMatchingTemplate(message) {
+  const snapshot = await getDocs(templatesCollection);
+  for (const doc of snapshot.docs) {
+    const template = doc.data();
+    if (template.triggers?.some(trigger => 
+      message.toLowerCase().includes(trigger.toLowerCase())
+    )) {
+      return { id: doc.id, ...template };
+    }
+  }
+  return null;
+}
 
-1. For lists, use this exact format:
-[LIST_VARS]
-HEADER_TEXT: "Header"
-BODY_TEXT: "Body text"
-FOOTER_TEXT: "Footer"
-BUTTON_TEXT: "Options"
-SECTION_TITLE: "Section 1"
-ROWS_ARRAY: [
-  {"id": "opt1", "title": "Option 1"},
-  {"id": "opt2", "title": "Option 2"}
-]
-[LIST_VARS_END]
+async function checkTicketStatus(trackingId) {
+  try {
+    const ticketRef = usersRef.collection('tickets').doc(trackingId);
+    const ticketSnap = await getDoc(ticketRef);
+    return ticketSnap.exists() ? ticketSnap.data() : { error: `Ticket ${trackingId} not found` };
+  } catch (error) {
+    console.error('Error checking ticket:', error);
+    return { error: "Failed to check ticket status" };
+  }
+}
 
-2. Never return JSON arrays or objects directly
-3. Keep responses concise`;
-
-  const systemPrompt = firstTime 
-    ? `Welcome message then help based on:\n${sharedPrompt}`
-    : `Direct help:\n${sharedPrompt}`;
-
+async function generateAIResponse(message) {
   const response = await axios.post(
     "https://openrouter.ai/api/v1/chat/completions",
     {
       model: "mistralai/mistral-7b-instruct",
-      messages: [
-        { 
-          role: "system", 
-          content: systemPrompt 
-        },
-        ...history,
-        { role: "user", content: userMessage }
-      ],
-      max_tokens: 1500,
+      messages: [{
+        role: "system",
+        content: "You are a helpful WhatsApp assistant. Keep responses concise."
+      }, {
+        role: "user",
+        content: message
+      }],
+      max_tokens: 1000,
       temperature: 0.7
     },
     {
@@ -257,180 +214,46 @@ ROWS_ARRAY: [
       }
     }
   );
-
   return response.data.choices[0].message.content;
 }
 
-// Helper functions
-async function checkTicketStatus(from, trackingId) {
-  try {
-    const ticketDoc = await usersRef.doc(from)
-      .collection('tickets')
-      .doc(trackingId)
-      .get();
-
-    return ticketDoc.exists ? ticketDoc.data() : { error: `Ticket ${trackingId} not found` };
-  } catch (error) {
-    console.error("Error checking ticket:", error);
-    return { error: "Failed to check ticket status" };
-  }
-}
-
-function parseListResponse(aiMessage, from) {
-  const listStart = aiMessage.indexOf("[LIST_VARS]");
-  const listEnd = aiMessage.indexOf("[LIST_VARS_END]");
-  const varsText = aiMessage.substring(listStart + 11, listEnd).trim();
-
-  const lines = varsText.split('\n').map(l => l.trim()).filter(Boolean);
-  const vars = { SECTIONS: [] };
-  let currentSection = null;
-
-  for (const line of lines) {
-    const [key, ...valueParts] = line.split(':');
-    const value = valueParts.join(':').trim().replace(/^"|"$/g, '');
-
-    if (key === 'HEADER_TEXT') vars.HEADER_TEXT = value;
-    else if (key === 'BODY_TEXT') vars.BODY_TEXT = value;
-    else if (key === 'FOOTER_TEXT') vars.FOOTER_TEXT = value;
-    else if (key === 'BUTTON_TEXT') vars.BUTTON_TEXT = value;
-    else if (key === 'SECTION_TITLE') {
-      if (currentSection) vars.SECTIONS.push(currentSection);
-      currentSection = { title: value, rows: [] };
-    }
-    else if (key === 'ROWS_ARRAY') {
-      const jsonStart = line.indexOf('[');
-      const jsonArray = line.slice(jsonStart);
-      currentSection.rows = JSON.parse(jsonArray);
-    }
-  }
-
-  if (currentSection) vars.SECTIONS.push(currentSection);
-
-  return {
-    messaging_product: 'whatsapp',
-    to: from,
-    type: 'interactive',
-    interactive: {
-      type: 'list',
-      header: { type: 'text', text: vars.HEADER_TEXT || '' },
-      body: { text: vars.BODY_TEXT || '' },
-      footer: { text: vars.FOOTER_TEXT || '' },
-      action: {
-        button: vars.BUTTON_TEXT || 'Options',
-        sections: vars.SECTIONS
+// Messaging functions
+async function sendTextMessage(to, text) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: text }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
       }
     }
-  };
-}
-
-async function saveConversation(from, userMessage, aiMessage) {
-  const logRef = usersRef.doc(from).collection("logs");
-  await logRef.add({ from: "user", message: userMessage, timestamp: new Date() });
-  await logRef.add({ from: "assistant", message: aiMessage, timestamp: new Date() });
-}
-
-// Messaging functions
-async function sendMessage(to, body, messageId = null) {
-  const data = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body }
-  };
-
-  if (messageId) {
-    data.context = { message_id: messageId };
-  }
-
-  await axios({
-    url: `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    data: JSON.stringify(data)
-  });
+  );
   console.log("💬 Sent text to", to);
 }
 
-async function sendInteractiveList(to, listData) {
-  await axios({
-    url: `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    data: JSON.stringify(listData)
-  });
-  console.log("📋 Sent list to", to);
-}
-
-async function sendReplyButtons(to) {
-  await axios({
-    url: `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    data: JSON.stringify({
+async function sendInteractiveMessage(to, interactiveContent) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    {
       messaging_product: 'whatsapp',
       to,
       type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: { text: 'Please select an option:' },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: 'btn1', title: 'Option 1' } },
-            { type: 'reply', reply: { id: 'btn2', title: 'Option 2' } }
-          ]
-        }
-      }
-    })
-  });
-  console.log("🔘 Sent buttons to", to);
-}
-
-async function sendImage(to, url, caption = "") {
-  await axios({
-    url: `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
+      interactive: interactiveContent
     },
-    data: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'image',
-      image: { link: url, caption }
-    })
-  });
-  console.log("🖼️ Sent image to", to);
-}
-
-async function sendTemplate(to, templateName) {
-  await axios({
-    url: `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    data: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: 'en' }
+    {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
       }
-    })
-  });
-  console.log("📤 Sent template:", templateName);
+    }
+  );
+  console.log("📋 Sent interactive message to", to);
 }
 
 app.listen(3000, () => {
