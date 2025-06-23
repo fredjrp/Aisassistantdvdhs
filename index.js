@@ -21,7 +21,6 @@ const transporter = nodemailer.createTransport({
 
 // Trigger words
 const WELCOME_TRIGGERS = ["hello", "hi", "hey", "start"];
-const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 const WELCOME_INTERACTIVE_MESSAGE = async (to) => {
