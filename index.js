@@ -26,43 +26,40 @@ const WELCOME_TEMPLATE = {
   triggers: ["hello", "hi", "hey", "start"],
   content: {
     type: "interactive",
-    interactive: {
-      type: "list",
-      header: {
-        type: "text",
-        text: "Welcome to Fred's Services! 👋"
-      },
-      body: {
-        text: "How can we help you today?"
-      },
-      footer: {
-        text: "Select an option below to get started"
-      },
-      action: {
-        button: "Menu Options",
-        sections: [
-          {
-            title: "Main Menu",
-            rows: [
-              {
-                id: "support_option",
-                title: "Get Support",
-                description: "Contact our support team"
-              },
-              {
-                id: "products_option",
-                title: "View Products",
-                description: "See what we offer"
-              },
-              {
-                id: "account_option",
-                title: "Account Help",
-                description: "Manage your account"
-              }
-            ]
-          }
-        ]
-      }
+    header: {
+      type: "text",
+      text: "Welcome to Fred's Services! 👋"
+    },
+    body: {
+      text: "How can we help you today?"
+    },
+    footer: {
+      text: "Select an option below to get started"
+    },
+    action: {
+      button: "Menu Options",
+      sections: [
+        {
+          title: "Main Menu",
+          rows: [
+            {
+              id: "support_option",
+              title: "Get Support",
+              description: "Contact our support team"
+            },
+            {
+              id: "products_option",
+              title: "View Products",
+              description: "See what we offer"
+            },
+            {
+              id: "account_option",
+              title: "Account Help",
+              description: "Manage your account"
+            }
+          ]
+        }
+      ]
     }
   }
 };
@@ -311,22 +308,29 @@ async function sendTextMessage(to, text) {
 }
 
 async function sendInteractiveMessage(to, interactiveContent) {
-  await axios.post(
-    `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: interactiveContent
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'interactive',
+        interactive: interactiveContent // Directly use the interactive content
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
-  console.log("📋 Sent interactive message to", to);
+    );
+    console.log("📋 Sent interactive message to", to);
+    return response.data;
+  } catch (error) {
+    console.error("❌ Failed to send interactive message:", error.response?.data || error.message);
+    throw error;
+  }
 }
 
 // Initialize server
