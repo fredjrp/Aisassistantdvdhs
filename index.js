@@ -2,25 +2,24 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
-const app = express();
-const { initializeApp } = require('firebase/app');
-const { getFirestore, doc, getDoc, collection, getDocs, setDoc } = require('firebase/firestore');
+const { initializeApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const admin = require('firebase-admin');
 
 // Initialize Firebase
-const firebaseApp = initializeApp({
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  // Add other Firebase config if needed
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
 });
-const db = getFirestore(firebaseApp);
-const templatesCollection = collection(db, 'whatsapp_templates');
-const usersRef = doc(collection(db, 'users'), 'default'); // Maintain your existing structure
+const db = getFirestore();
 
+const app = express();
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "your_custom_token";
 
 app.use(express.json());
 
-// Email transporter setup (unchanged)
+// Email transporter setup
 const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || 'gmail',
   auth: {
@@ -29,7 +28,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Routes (unchanged)
+// Routes
 app.get('/', (req, res) => {
   res.send('WhatsApp Business API with Firebase Templates');
 });
@@ -48,11 +47,11 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// New template endpoints
+// Template endpoints
 app.get('/templates', async (req, res) => {
   try {
     const templates = [];
-    const snapshot = await getDocs(templatesCollection);
+    const snapshot = await db.collection('whatsapp_templates').get();
     snapshot.forEach(doc => {
       templates.push({ id: doc.id, ...doc.data() });
     });
@@ -66,14 +65,14 @@ app.get('/templates', async (req, res) => {
 app.get('/send-template/:templateName/:phone', async (req, res) => {
   try {
     const { templateName, phone } = req.params;
-    const templateRef = doc(templatesCollection, templateName);
-    const templateSnap = await getDoc(templateRef);
+    const docRef = db.collection('whatsapp_templates').doc(templateName);
+    const docSnap = await docRef.get();
 
-    if (!templateSnap.exists()) {
+    if (!docSnap.exists) {
       return res.status(404).send('Template not found');
     }
 
-    const template = templateSnap.data();
+    const template = docSnap.data();
     await sendInteractiveMessage(phone, template.content);
     res.send(`Template "${templateName}" sent to ${phone}`);
   } catch (error) {
@@ -82,18 +81,18 @@ app.get('/send-template/:templateName/:phone', async (req, res) => {
   }
 });
 
-// Support ticket functions (unchanged structure)
+// Support ticket functions
 async function createSupportTicket(from, userMessage) {
   const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
   
-  await usersRef.collection('tickets').doc(trackingId).set({
+  await db.collection('support_tickets').doc(trackingId).set({
     id: trackingId,
     issue: userMessage,
     status: 'pending',
-    createdAt: new Date(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
     resolved: false,
     from,
-    lastUpdated: new Date()
+    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
   });
 
   await sendSupportEmail(from, userMessage, trackingId);
@@ -103,10 +102,10 @@ async function createSupportTicket(from, userMessage) {
 async function sendSupportEmail(from, userMessage, trackingId) {
   try {
     const info = await transporter.sendMail({
-      from: `"Fred AI Support" <${process.env.EMAIL_USER}>`,
-      to: process.env.SUPPORT_EMAIL || 'support@yourdomain.com',
+      from: `"Support Bot" <${process.env.EMAIL_USER}>`,
+      to: process.env.SUPPORT_EMAIL,
       subject: `New Support Ticket: ${trackingId}`,
-      text: `New support ticket created:\n\nFrom: ${from}\nIssue: ${userMessage}\nTracking ID: ${trackingId}`
+      text: `New ticket from ${from}:\n\n${userMessage}\n\nTracking ID: ${trackingId}`
     });
     console.log("📧 Support email sent:", info.messageId);
   } catch (error) {
@@ -114,7 +113,7 @@ async function sendSupportEmail(from, userMessage, trackingId) {
   }
 }
 
-// Updated webhook handler
+// Webhook handler
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body;
 
@@ -169,7 +168,7 @@ app.post('/webhook', async (req, res) => {
 
 // Helper functions
 async function findMatchingTemplate(message) {
-  const snapshot = await getDocs(templatesCollection);
+  const snapshot = await db.collection('whatsapp_templates').get();
   for (const doc of snapshot.docs) {
     const template = doc.data();
     if (template.triggers?.some(trigger => 
@@ -183,9 +182,9 @@ async function findMatchingTemplate(message) {
 
 async function checkTicketStatus(trackingId) {
   try {
-    const ticketRef = usersRef.collection('tickets').doc(trackingId);
-    const ticketSnap = await getDoc(ticketRef);
-    return ticketSnap.exists() ? ticketSnap.data() : { error: `Ticket ${trackingId} not found` };
+    const docRef = db.collection('support_tickets').doc(trackingId);
+    const docSnap = await docRef.get();
+    return docSnap.exists ? docSnap.data() : { error: `Ticket ${trackingId} not found` };
   } catch (error) {
     console.error('Error checking ticket:', error);
     return { error: "Failed to check ticket status" };
@@ -256,8 +255,9 @@ async function sendInteractiveMessage(to, interactiveContent) {
   console.log("📋 Sent interactive message to", to);
 }
 
-app.listen(3000, () => {
-  console.log('🚀 Server running on port 3000');
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
   console.log("📞 PHONE ID:", process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("🔐 TOKEN:", WHATSAPP_ACCESS_TOKEN?.slice(0, 6) + '...');
 });
