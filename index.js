@@ -1,4 +1,4 @@
-require('dotenv').config(); // Load environment variables
+require('dotenv').config();
 
 const express = require('express');
 const axios = require('axios');
@@ -6,14 +6,19 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// Environment variables
+// Load environment variables
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
+if (!WHATSAPP_ACCESS_TOKEN || !PHONE_NUMBER_ID || !WEBHOOK_VERIFY_TOKEN) {
+  console.error("❌ Missing required environment variables.");
+  process.exit(1);
+}
+
 // Home route
 app.get('/', (req, res) => {
-  res.send('✅ WhatsApp Webhook is live');
+  res.send('✅ WhatsApp Webhook is running');
 });
 
 // Webhook verification
@@ -30,15 +35,12 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Webhook message receiver
+// Webhook event handler
 app.post('/webhook', async (req, res) => {
-  const { entry } = req.body;
-
-  if (!entry || !entry[0]?.changes) return res.sendStatus(400);
-
-  const change = entry[0].changes[0];
-  const message = change.value?.messages?.[0];
-  const status = change.value?.statuses?.[0];
+  const entry = req.body.entry?.[0];
+  const changes = entry?.changes?.[0];
+  const message = changes?.value?.messages?.[0];
+  const status = changes?.value?.statuses?.[0];
 
   if (status) {
     console.log(`📦 Message Status: ${status.status}, ID: ${status.id}`);
@@ -57,10 +59,11 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (type === 'interactive') {
-      if (message.interactive.type === 'list_reply') {
-        await sendMessage(from, `✅ You selected: ${message.interactive.list_reply.title}`);
-      } else if (message.interactive.type === 'button_reply') {
-        await sendMessage(from, `✅ You clicked: ${message.interactive.button_reply.title}`);
+      const interactive = message.interactive;
+      if (interactive.type === 'list_reply') {
+        await sendMessage(from, `✅ You selected: ${interactive.list_reply.title}`);
+      } else if (interactive.type === 'button_reply') {
+        await sendMessage(from, `✅ You clicked: ${interactive.button_reply.title}`);
       }
     }
 
@@ -70,7 +73,7 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-// Plain text message
+// Text message
 async function sendMessage(to, body) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -85,19 +88,19 @@ async function sendMessage(to, body) {
       }
     });
   } catch (error) {
-    console.error('❌ Error sending message:', error?.response?.data || error.message);
+    console.error('❌ Error sending message:', error.response?.data || error.message);
   }
 }
 
-// Reply message to a specific message ID
+// Reply to a message ID
 async function replyMessage(to, body, messageId) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
+      context: { message_id: messageId },
       type: 'text',
-      text: { body },
-      context: { message_id: messageId }
+      text: { body }
     }, {
       headers: {
         Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -105,11 +108,11 @@ async function replyMessage(to, body, messageId) {
       }
     });
   } catch (error) {
-    console.error('❌ Error sending reply:', error?.response?.data || error.message);
+    console.error('❌ Error sending reply:', error.response?.data || error.message);
   }
 }
 
-// Interactive list message
+// Send interactive list
 async function sendList(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -120,38 +123,38 @@ async function sendList(to) {
         type: 'list',
         header: {
           type: 'text',
-          text: 'List Menu'
+          text: '📋 Menu'
         },
         body: {
-          text: 'Choose one of the options below:'
+          text: 'Choose an option from the list:'
         },
         footer: {
-          text: 'Fred\'s Assistant'
+          text: 'Powered by Fred'
         },
         action: {
           button: 'Open Menu',
           sections: [
             {
-              title: 'Services',
+              title: 'Main Options',
               rows: [
                 {
-                  id: 'first_option',
+                  id: 'opt1',
                   title: 'First Option',
-                  description: 'This is the first choice'
+                  description: 'This is the first option'
                 },
                 {
-                  id: 'second_option',
+                  id: 'opt2',
                   title: 'Second Option',
-                  description: 'This is the second choice'
+                  description: 'This is the second option'
                 }
               ]
             },
             {
-              title: 'Support',
+              title: 'Other',
               rows: [
                 {
                   id: 'help',
-                  title: 'Contact Support'
+                  title: 'Help & Support'
                 }
               ]
             }
@@ -165,11 +168,11 @@ async function sendList(to) {
       }
     });
   } catch (error) {
-    console.error('❌ Error sending list:', error?.response?.data || error.message);
+    console.error('❌ Error sending list:', error.response?.data || error.message);
   }
 }
 
-// Interactive button message
+// Send interactive buttons
 async function sendReplyButtons(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -180,10 +183,10 @@ async function sendReplyButtons(to) {
         type: 'button',
         header: {
           type: 'text',
-          text: 'Quick Actions'
+          text: '⚡ Quick Action'
         },
         body: {
-          text: 'Choose one of the actions below'
+          text: 'Click a button below:'
         },
         footer: {
           text: 'Fred\'s Assistant'
@@ -193,15 +196,15 @@ async function sendReplyButtons(to) {
             {
               type: 'reply',
               reply: {
-                id: 'first_button',
-                title: 'First Button'
+                id: 'btn1',
+                title: 'Option A'
               }
             },
             {
               type: 'reply',
               reply: {
-                id: 'second_button',
-                title: 'Second Button'
+                id: 'btn2',
+                title: 'Option B'
               }
             }
           ]
@@ -214,11 +217,11 @@ async function sendReplyButtons(to) {
       }
     });
   } catch (error) {
-    console.error('❌ Error sending buttons:', error?.response?.data || error.message);
+    console.error('❌ Error sending buttons:', error.response?.data || error.message);
   }
 }
 
-// Start server on Render-compatible port
+// Render/production compatible port
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
