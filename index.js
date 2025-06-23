@@ -3,7 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const app = express();
-const usersRef = require('./firebase'); // Keep your existing Firebase initialization
+const usersRef = require('./firebase'); // Your existing Firebase setup
 
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "your_custom_token";
@@ -19,9 +19,72 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Routes (unchanged)
+// Default welcome template
+const WELCOME_TEMPLATE = {
+  name: "welcome_message",
+  description: "Default welcome message for new clients",
+  triggers: ["hello", "hi", "hey", "start"],
+  content: {
+    type: "interactive",
+    interactive: {
+      type: "list",
+      header: {
+        type: "text",
+        text: "Welcome to Fred's Services! 👋"
+      },
+      body: {
+        text: "How can we help you today?"
+      },
+      footer: {
+        text: "Select an option below to get started"
+      },
+      action: {
+        button: "Menu Options",
+        sections: [
+          {
+            title: "Main Menu",
+            rows: [
+              {
+                id: "support_option",
+                title: "Get Support",
+                description: "Contact our support team"
+              },
+              {
+                id: "products_option",
+                title: "View Products",
+                description: "See what we offer"
+              },
+              {
+                id: "account_option",
+                title: "Account Help",
+                description: "Manage your account"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+};
+
+// Initialize templates collection on startup
+async function initializeTemplates() {
+  try {
+    const templatesRef = usersRef.firestore.collection('whatsapp_templates');
+    const welcomeTemplate = await templatesRef.doc('welcome_message').get();
+    
+    if (!welcomeTemplate.exists) {
+      await templatesRef.doc('welcome_message').set(WELCOME_TEMPLATE);
+      console.log('✅ Created default welcome template');
+    }
+  } catch (error) {
+    console.error('❌ Error initializing templates:', error);
+  }
+}
+
+// Routes
 app.get('/', (req, res) => {
-  res.send('WhatsApp Business API with Node.js and Webhooks');
+  res.send('WhatsApp Business API with Auto Templates');
 });
 
 app.get('/webhook', (req, res) => {
@@ -38,7 +101,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// New template endpoints
+// Template management endpoints
 app.get('/templates', async (req, res) => {
   try {
     const templates = [];
@@ -53,26 +116,18 @@ app.get('/templates', async (req, res) => {
   }
 });
 
-app.get('/send-template/:templateName/:phone', async (req, res) => {
+app.post('/templates', async (req, res) => {
   try {
-    const { templateName, phone } = req.params;
-    const templateRef = usersRef.firestore.collection('whatsapp_templates').doc(templateName);
-    const templateSnap = await templateRef.get();
-
-    if (!templateSnap.exists) {
-      return res.status(404).send('Template not found');
-    }
-
-    const template = templateSnap.data();
-    await sendInteractiveMessage(phone, template.content);
-    res.send(`Template "${templateName}" sent to ${phone}`);
+    const newTemplate = req.body;
+    await usersRef.firestore.collection('whatsapp_templates').doc(newTemplate.name).set(newTemplate);
+    res.status(201).send(`Template ${newTemplate.name} created`);
   } catch (error) {
-    console.error('Error sending template:', error);
-    res.status(500).send('Error sending template');
+    console.error('Error creating template:', error);
+    res.status(500).send('Error creating template');
   }
 });
 
-// Support ticket functions (unchanged structure)
+// Support ticket functions (unchanged)
 async function createSupportTicket(from, userMessage) {
   const trackingId = 'TKT-' + Date.now().toString(36).toUpperCase();
   
@@ -113,7 +168,7 @@ async function sendSupportEmail(from, userMessage, trackingId) {
   }
 }
 
-// Updated webhook handler
+// Webhook handler with template matching
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body;
 
@@ -145,6 +200,22 @@ app.post('/webhook', async (req, res) => {
         );
       }
       return res.status(200).send('OK');
+    }
+
+    // Check if first-time user
+    const userDoc = await usersRef.doc(from).get();
+    const firstTime = !userDoc.exists || !userDoc.data().greeted;
+
+    // Send welcome template for first-time users
+    if (firstTime) {
+      const welcomeTemplate = await usersRef.firestore.collection('whatsapp_templates')
+        .doc('welcome_message').get();
+      
+      if (welcomeTemplate.exists) {
+        await usersRef.doc(from).set({ greeted: true }, { merge: true });
+        await sendInteractiveMessage(from, welcomeTemplate.data().content);
+        return res.status(200).send('OK');
+      }
     }
 
     // Check for matching template
@@ -258,8 +329,10 @@ async function sendInteractiveMessage(to, interactiveContent) {
   console.log("📋 Sent interactive message to", to);
 }
 
+// Initialize server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  await initializeTemplates(); // Create default templates on startup
   console.log(`🚀 Server running on port ${PORT}`);
   console.log("📞 PHONE ID:", process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("🔐 TOKEN:", WHATSAPP_ACCESS_TOKEN?.slice(0, 6) + '...');
