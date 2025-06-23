@@ -127,42 +127,41 @@ const LIST_TEMPLATE = {
   "type": "interactive"
 };
 
-// Helper function to parse list variables with JSON repair
 function parseListVars(varsText) {
-  const vars = {};
-  const lines = varsText.split('\n').filter(l => l.trim() !== '');
-  
-  lines.forEach(line => {
-    const [key, ...rest] = line.split(':');
-    const value = rest.join(':').trim();
-    vars[key.trim()] = value;
-  });
-
-  // Validate required fields
-  if (!vars.SECTION_TITLE) {
-    throw new Error("SECTION_TITLE is required");
-  }
-
-  if (vars.ROWS_ARRAY) {
-    try {
-      // First try to parse as-is
-      vars.ROWS_ARRAY = JSON.parse(vars.ROWS_ARRAY);
-    } catch (e) {
-      console.error("Invalid ROWS_ARRAY JSON. Trying to fix...");
-      // Attempt to fix by quoting unquoted keys
-      const fixedJson = vars.ROWS_ARRAY
-        .replace(/([{,])\s*(\w+)\s*:/g, '$1 "$2":')
-        .replace(/:([^"\s][^,}\s]*)([,}])/g, ':"$1"$2');
-      
+  const cleanText = varsText
+    .replace(/([A-Z_]+):/g, '"$1":')  // Add quotes to keys
+    .replace(/:\s*\[([\s\S]*?)\](,?)/g, (match, rows, comma) => {
       try {
-        vars.ROWS_ARRAY = JSON.parse(fixedJson);
-      } catch (e2) {
-        throw new Error("Invalid ROWS_ARRAY format after repair attempt.");
+        const fixedRows = `[${rows
+          .trim()
+          .replace(/([{,])\s*(\w+)\s*:/g, '$1"$2":')
+          .replace(/:\s*([^"\[\]{},\s][^,\]}]*)/g, ': "$1"')}]`;
+        JSON.parse(fixedRows); // Ensure it's valid
+        return `: ${fixedRows}${comma}`;
+      } catch {
+        throw new Error("❌ Invalid ROWS_ARRAY format");
       }
-    }
-  }
+    });
 
-  return vars;
+  const json = `{${cleanText}}`;
+
+  try {
+    const parsed = JSON.parse(json);
+
+    // Validate required fields
+    if (!parsed.SECTION_TITLE || typeof parsed.SECTION_TITLE !== 'string' || parsed.SECTION_TITLE.trim() === "") {
+      throw new Error("❌ SECTION_TITLE is required and must be non-empty.");
+    }
+
+    if (!Array.isArray(parsed.ROWS_ARRAY)) {
+      throw new Error("❌ ROWS_ARRAY must be a valid array.");
+    }
+
+    return parsed;
+  } catch (err) {
+    console.error("❌ Failed to parse AI response:", err.message);
+    throw err;
+  }
 }
 
 // Incoming message handler
