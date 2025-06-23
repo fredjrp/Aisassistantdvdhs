@@ -3,109 +3,85 @@ const express = require('express');
 const axios = require('axios');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
-const fs = require('fs');
 
 const app = express();
 app.use(express.json());
 
 // 🌍 ENV
-const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
-const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const EMAIL_USER = process.env.EMAIL_USER;
-const EMAIL_PASS = process.env.EMAIL_PASS;
-const ALERT_EMAIL = process.env.ALERT_EMAIL;
+const {
+  WHATSAPP_ACCESS_TOKEN,
+  WEBHOOK_VERIFY_TOKEN,
+  PHONE_NUMBER_ID,
+  OPENROUTER_API_KEY,
+  EMAIL_USER,
+  EMAIL_PASS,
+  ALERT_EMAIL
+} = process.env;
 
-// 🔥 Initialize Firebase
+// 🔥 Firebase Setup
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
-// Fix: Convert escaped \n in private_key to actual newlines
 rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
-admin.initializeApp({
-  credential: admin.credential.cert(rawConfig)
-});
-
+admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-// 📧 Nodemailer setup
+// 📧 Nodemailer
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-  auth: {
-    user: EMAIL_USER,
-    pass: EMAIL_PASS,
-  },
+  auth: { user: EMAIL_USER, pass: EMAIL_PASS },
 });
 
-// ✅ Root
-app.get('/', (req, res) => {
-  res.send('✅ WhatsApp Webhook + Firebase + AI + Email running');
-});
-
-// ✅ Webhook verify
+// ✅ Webhook Verification
 app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
   if (mode && token === WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
   res.sendStatus(403);
 });
 
-// ✅ Webhook listener
+// ✅ Webhook Listener
 app.post('/webhook', async (req, res) => {
-  const entry = req.body.entry?.[0];
-  const changes = entry?.changes?.[0];
-  const message = changes?.value?.messages?.[0];
-  const status = changes?.value?.statuses?.[0];
+  const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const status = req.body.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
 
-  if (status) {
-    console.log(`📦 Message Status: ${status.status}, ID: ${status.id}`);
-  }
+  if (status) console.log(`📦 Status: ${status.status} | ID: ${status.id}`);
+  if (!message) return res.sendStatus(200);
 
-  if (message) {
-    const from = message.from;
-    const type = message.type;
-    const text = message.text?.body?.toLowerCase();
-    const messageId = message.id;
+  const { from, type, id: messageId } = message;
+  const text = message.text?.body?.toLowerCase();
 
-    // 🧠 Log to Firebase
-    await db.collection('whatsapp_logs').add({
-      from,
-      type,
-      message,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    });
+  await db.collection('whatsapp_logs').add({
+    from, type, message,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
 
-    if (type === 'text') {
-      if (text === 'hello') await replyMessage(from, 'Hello. How are you?', messageId);
-      else if (text === 'list') await sendList(from);
-      else if (text === 'buttons') await sendReplyButtons(from);
-      else if (text === 'help') {
-        await sendMessage(from, 'We are here to help. An agent has been notified.');
-        await sendEmailAlert(from, 'User requested help');
+  if (type === 'text') {
+    if (text === 'hello') await replyMessage(from, 'Hello there 👋', messageId);
+    else if (text === 'list') await sendDynamicList(from);
+    else if (text === 'buttons') await sendReplyButtons(from);
+    else if (text === 'help') {
+      await sendMessage(from, 'We are here to help. An agent has been notified.');
+      await sendEmailAlert(from, 'User requested help');
+    } else {
+      const aiReply = await getAIResponse(text);
+      if (aiReply.includes('[LIST]')) {
+        const parsed = parseAiList(aiReply);
+        await sendDynamicList(from, parsed);
       } else {
-        // 🧠 AI Fallback
-        const aiReply = await getAIResponse(text);
         await sendMessage(from, aiReply);
       }
     }
-
-    if (type === 'interactive') {
-      const interactive = message.interactive;
-      if (interactive.type === 'list_reply') {
-        await sendMessage(from, `✅ You selected: ${interactive.list_reply.title}`);
-      } else if (interactive.type === 'button_reply') {
-        await sendMessage(from, `✅ You clicked: ${interactive.button_reply.title}`);
-      }
-    }
-
-    console.log("📩 Message Received:", JSON.stringify(message, null, 2));
   }
 
+  if (type === 'interactive') {
+    const i = message.interactive;
+    if (i.type === 'list_reply') await sendMessage(from, `✅ You selected: ${i.list_reply.title}`);
+    if (i.type === 'button_reply') await sendMessage(from, `✅ You clicked: ${i.button_reply.title}`);
+  }
+
+  console.log("📩 Message:", JSON.stringify(message, null, 2));
   res.sendStatus(200);
 });
 
-// ✅ Message functions (NO CHANGE TO YOUR LIST/BUTTON DESIGN)
-
+// ✅ Message Helpers
 async function sendMessage(to, body) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -119,8 +95,8 @@ async function sendMessage(to, body) {
         'Content-Type': 'application/json'
       }
     });
-  } catch (error) {
-    console.error('❌ Error sending message:', error.response?.data || error.message);
+  } catch (err) {
+    console.error('❌ sendMessage:', err.response?.data || err.message);
   }
 }
 
@@ -138,47 +114,66 @@ async function replyMessage(to, body, messageId) {
         'Content-Type': 'application/json'
       }
     });
-  } catch (error) {
-    console.error('❌ Error sending reply:', error.response?.data || error.message);
+  } catch (err) {
+    console.error('❌ replyMessage:', err.response?.data || err.message);
   }
 }
 
-async function sendList(to) {
-  try {
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'list',
-        header: { type: 'text', text: '📋 Menu' },
-        body: { text: 'Choose an option from the list:' },
-        footer: { text: 'Powered by Fred' },
-        action: {
-          button: 'Open Menu',
-          sections: [
-            {
-              title: 'Main Options',
-              rows: [
-                { id: 'opt1', title: 'First Option', description: 'This is the first option' },
-                { id: 'opt2', title: 'Second Option', description: 'This is the second option' }
-              ]
-            },
-            {
-              title: 'Other',
-              rows: [{ id: 'help', title: 'Help & Support' }]
-            }
-          ]
-        }
+// ✅ Dynamic List (Your format)
+async function sendDynamicList(to, aiData = {}) {
+  const variables = {
+    to,
+    headerText: aiData.headerText || '📋 Menu',
+    bodyText: aiData.bodyText || 'Choose from the list:',
+    footerText: aiData.footerText || 'Fred Assistant',
+    buttonText: aiData.buttonText || 'Open Menu',
+    section1Title: aiData.section1Title || 'Main',
+    section2Title: aiData.section2Title || 'Support',
+    section1Rows: JSON.stringify(aiData.section1Rows || [
+      { id: "opt1", title: "Option A", description: "Details about A" },
+      { id: "opt2", title: "Option B", description: "Details about B" },
+    ]),
+    section2Rows: JSON.stringify(aiData.section2Rows || [
+      { id: "help", title: "Help & Support" }
+    ])
+  };
+
+  const template = `
+  {
+    "messaging_product": "whatsapp",
+    "to": "${variables.to}",
+    "type": "interactive",
+    "interactive": {
+      "type": "list",
+      "header": { "type": "text", "text": "${variables.headerText}" },
+      "body": { "text": "${variables.bodyText}" },
+      "footer": { "text": "${variables.footerText}" },
+      "action": {
+        "button": "${variables.buttonText}",
+        "sections": [
+          {
+            "title": "${variables.section1Title}",
+            "rows": ${variables.section1Rows}
+          },
+          {
+            "title": "${variables.section2Title}",
+            "rows": ${variables.section2Rows}
+          }
+        ]
       }
-    }, {
+    }
+  }`;
+
+  try {
+    const parsedBody = JSON.parse(template);
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, parsedBody, {
       headers: {
         Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
   } catch (error) {
-    console.error('❌ Error sending list:', error.response?.data || error.message);
+    console.error("❌ Dynamic list error:", error.response?.data || error.message);
   }
 }
 
@@ -192,7 +187,7 @@ async function sendReplyButtons(to) {
         type: 'button',
         header: { type: 'text', text: '⚡ Quick Action' },
         body: { text: 'Click a button below:' },
-        footer: { text: 'Fred\'s Assistant' },
+        footer: { text: 'FredBot' },
         action: {
           buttons: [
             { type: 'reply', reply: { id: 'btn1', title: 'Option A' } },
@@ -206,12 +201,12 @@ async function sendReplyButtons(to) {
         'Content-Type': 'application/json'
       }
     });
-  } catch (error) {
-    console.error('❌ Error sending buttons:', error.response?.data || error.message);
+  } catch (err) {
+    console.error('❌ sendReplyButtons:', err.response?.data || err.message);
   }
 }
 
-// ✅ Email alert
+// ✅ Email Alerts
 async function sendEmailAlert(from, subjectText) {
   try {
     await transporter.sendMail({
@@ -220,45 +215,61 @@ async function sendEmailAlert(from, subjectText) {
       subject: `🚨 Alert: ${subjectText}`,
       text: `User ${from} triggered an alert.`,
     });
-    console.log('📧 Email sent to admin');
-  } catch (error) {
-    console.error('❌ Email error:', error.message);
+  } catch (err) {
+    console.error('❌ Email error:', err.message);
   }
 }
 
-// ✅ OpenRouter AI
+// ✅ AI Handler
 async function getAIResponse(userText) {
   try {
-    console.log("🧠 AI Input:", userText);
-
     const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
       model: "mistralai/mistral-7b-instruct",
       messages: [
-        { role: "system", content: "You are a helpful WhatsApp assistant." },
+        { role: "system", content: "You are a helpful WhatsApp assistant. If asked for a menu, respond with [LIST] format." },
         { role: "user", content: userText }
       ]
     }, {
       headers: {
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json'
-      },
-      timeout: 100000
+      }
     });
-
-    const responseText = res.data.choices?.[0]?.message?.content || "🤖 Sorry, I couldn't respond.";
-    return responseText;
-  } catch (error) {
-    console.error('❌ AI Error:', {
-      data: error?.response?.data,
-      status: error?.response?.status,
-      message: error?.message,
-    });
+    return res.data.choices?.[0]?.message?.content || "🤖 Sorry, I couldn't respond.";
+  } catch (err) {
+    console.error("❌ AI Error:", err.response?.data || err.message);
     return "🤖 Sorry, I had trouble responding.";
   }
 }
 
+// ✅ AI → JSON Parser
+function parseAiList(text) {
+  const result = {};
+  try {
+    const lines = text.split('\n').filter(line => line.trim() && !line.startsWith('[LIST]'));
+    for (const line of lines) {
+      if (line.startsWith('-')) {
+        const match = line.match(/id:\s*(\w+),\s*title:\s*([^,]+),?\s*description?:?\s*(.*)?/);
+        if (match) {
+          const row = { id: match[1], title: match[2], description: match[3] || "" };
+          const lastArrayKey = Object.keys(result).filter(k => Array.isArray(result[k])).pop();
+          if (lastArrayKey) result[lastArrayKey].push(row);
+        }
+      } else if (line.includes(':')) {
+        const [key, ...rest] = line.split(':');
+        const value = rest.join(':').trim();
+        if (key.includes("Rows")) result[key.trim()] = [];
+        else result[key.trim()] = value;
+      }
+    }
+  } catch (err) {
+    console.error('⚠️ AI parse error:', err.message);
+  }
+  return result;
+}
 
+// ✅ Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 WhatsApp bot running on port ${PORT}`);
 });
