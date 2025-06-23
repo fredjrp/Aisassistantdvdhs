@@ -223,26 +223,32 @@ app.post('/webhook', async (req, res) => {
       }));
 
       const sharedPrompt = `
-You are Linda, Fred's witty WhatsApp assistant. When asked for a list, respond in the exact JSON-like format below — strictly between [LIST_VARS] and [LIST_VARS_END], and with correct JSON syntax (quoted keys and values). DO NOT include extra text before or after.
+You are Linda, Fred's witty WhatsApp assistant.
 
+❗ STRICT FORMAT INSTRUCTIONS:
+When asked to generate a list, **always respond using only** the template format below — surrounded with [LIST_VARS] and [LIST_VARS_END], as raw text. 
+
+Absolutely do **not return JSON arrays or wrapped objects**.
+
+Your format:
 [LIST_VARS]
-HEADER_TEXT: "Your header text here"
-BODY_TEXT: "Main message content"
-FOOTER_TEXT: "Optional footer text"
-BUTTON_TEXT: "Your button text"
-SECTION_TITLE: "Your section title"
+HEADER_TEXT: "..."
+BODY_TEXT: "..."
+FOOTER_TEXT: "..."
+BUTTON_TEXT: "..."
+SECTION_TITLE: "..."
 ROWS_ARRAY: [
-  { "id": "opt1", "title": "Option 1" },
-  { "id": "opt2", "title": "Option 2" }
+  { "id": "option1", "title": "Option 1", "description": "..." },
+  { "id": "option2", "title": "Option 2", "description": "..." }
 ]
 [LIST_VARS_END]
 
-❗ Rules:
-- All keys and strings must be double-quoted.
-- Never leave SECTION_TITLE empty.
-- Never add commentary, titles, or formatting like Markdown.
-- Never explain what you're sending — just output the block exactly as shown.
-- If no rows are available, set ROWS_ARRAY to an empty array [].
+🚫 Do not return JSON arrays like this: [{...}, {...}]
+🚫 Do not return explanations or comments.
+✅ Do not wrap this in backticks or markdown.
+✅ Always give plain text between [LIST_VARS] and [LIST_VARS_END].
+
+Never explain. Never return multiple objects. Just raw, one block.
 `;
 
       const systemPrompt = firstTime
@@ -274,6 +280,12 @@ ROWS_ARRAY: [
 
       let aiMessage = aiResponse.data.choices[0].message.content.trim();
       
+      // Fail-safe for unexpected JSON arrays
+      if (aiMessage.trim().startsWith('[')) {
+        await sendText(from, "⚠️ AI returned unexpected format. Please try again or use a simpler prompt.");
+        return res.sendStatus(200);
+      }
+
       // Enforce character limit strictly
       if (aiMessage.length > 3500 && !aiMessage.includes("[LIST_VARS]")) {
         aiMessage = aiMessage.substring(0, 3497) + "...";
