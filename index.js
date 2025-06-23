@@ -112,12 +112,7 @@ const LIST_TEMPLATE = {
     },
     "action": {
       "button": "$BUTTON_TEXT$",
-      "sections": [
-        {
-          "title": "$SECTION_TITLE$",
-          "rows": "$ROWS_ARRAY$"
-        }
-      ]
+      "sections": []
     }
   },
   "messaging_product": "whatsapp",
@@ -128,40 +123,44 @@ const LIST_TEMPLATE = {
 };
 
 function parseListVars(varsText) {
-  const cleanText = varsText
-    .replace(/([A-Z_]+):/g, '"$1":')  // Add quotes to keys
-    .replace(/:\s*\[([\s\S]*?)\](,?)/g, (match, rows, comma) => {
+  const lines = varsText.split('\n').map(line => line.trim()).filter(Boolean);
+
+  const vars = {
+    HEADER_TEXT: '',
+    BODY_TEXT: '',
+    FOOTER_TEXT: '',
+    BUTTON_TEXT: '',
+    SECTIONS: []
+  };
+
+  let currentSection = null;
+
+  for (let line of lines) {
+    if (line.startsWith("HEADER_TEXT:")) {
+      vars.HEADER_TEXT = line.replace("HEADER_TEXT:", "").trim().replace(/^"|"$/g, '');
+    } else if (line.startsWith("BODY_TEXT:")) {
+      vars.BODY_TEXT = line.replace("BODY_TEXT:", "").trim().replace(/^"|"$/g, '');
+    } else if (line.startsWith("FOOTER_TEXT:")) {
+      vars.FOOTER_TEXT = line.replace("FOOTER_TEXT:", "").trim().replace(/^"|"$/g, '');
+    } else if (line.startsWith("BUTTON_TEXT:")) {
+      vars.BUTTON_TEXT = line.replace("BUTTON_TEXT:", "").trim().replace(/^"|"$/g, '');
+    } else if (line.startsWith("SECTION_TITLE:")) {
+      if (currentSection) vars.SECTIONS.push(currentSection);
+      currentSection = { title: line.replace("SECTION_TITLE:", "").trim().replace(/^"|"$/g, ''), rows: [] };
+    } else if (line.startsWith("ROWS_ARRAY:")) {
+      const arrayStart = line.indexOf('[');
+      const jsonArray = line.slice(arrayStart);
       try {
-        const fixedRows = `[${rows
-          .trim()
-          .replace(/([{,])\s*(\w+)\s*:/g, '$1"$2":')
-          .replace(/:\s*([^"\[\]{},\s][^,\]}]*)/g, ': "$1"')}]`;
-        JSON.parse(fixedRows); // Ensure it's valid
-        return `: ${fixedRows}${comma}`;
-      } catch {
-        throw new Error("❌ Invalid ROWS_ARRAY format");
+        const parsedRows = JSON.parse(jsonArray);
+        if (currentSection) currentSection.rows = parsedRows;
+      } catch (e) {
+        throw new Error("Invalid ROWS_ARRAY JSON");
       }
-    });
-
-  const json = `{${cleanText}}`;
-
-  try {
-    const parsed = JSON.parse(json);
-
-    // Validate required fields
-    if (!parsed.SECTION_TITLE || typeof parsed.SECTION_TITLE !== 'string' || parsed.SECTION_TITLE.trim() === "") {
-      throw new Error("❌ SECTION_TITLE is required and must be non-empty.");
     }
-
-    if (!Array.isArray(parsed.ROWS_ARRAY)) {
-      throw new Error("❌ ROWS_ARRAY must be a valid array.");
-    }
-
-    return parsed;
-  } catch (err) {
-    console.error("❌ Failed to parse AI response:", err.message);
-    throw err;
   }
+
+  if (currentSection) vars.SECTIONS.push(currentSection);
+  return vars;
 }
 
 // Incoming message handler
@@ -306,8 +305,7 @@ ROWS_ARRAY: [
           listData.interactive.body.text = vars.BODY_TEXT || "";
           listData.interactive.footer.text = vars.FOOTER_TEXT || "";
           listData.interactive.action.button = vars.BUTTON_TEXT || "Select";
-          listData.interactive.action.sections[0].title = vars.SECTION_TITLE;
-          listData.interactive.action.sections[0].rows = vars.ROWS_ARRAY || [];
+          listData.interactive.action.sections = vars.SECTIONS;
 
           await sendInteractiveList(from, listData);
           console.log("📋 Sent interactive list with template");
