@@ -19,57 +19,54 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Default welcome template with exact WhatsApp API format
-// Default welcome template with exact WhatsApp API format
-const WELCOME_TEMPLATE = {
-  name: "welcome_message",
-  description: "Default welcome message for new clients",
-  triggers: ["hello", "hi", "hey", "start"],
-  content: {
-    messaging_product: "whatsapp",
-    to: "", // This will be set when sending
-    type: "interactive",
-    interactive: {
-      type: "list",
-      header: {
-        type: "text",
-        text: "Message Header"
-      },
-      body: {
-        text: "This is a interactive list message"
-      },
-      footer: {
-        text: "This is the message footer"
-      },
-      action: {
-        button: "Tap for the options",
-        sections: [
-          {
-            title: "First Section",
-            rows: [
-              {
-                id: "first_option",
-                title: "First option",
-                description: "This is the description of the first option"
-              },
-              {
-                id: "second_option",
-                title: "Second option",
-                description: "This is the description of the second option"
-              }
-            ]
-          },
-          {
-            title: "Second Section",
-            rows: [
-              {
-                id: "third_option",
-                title: "Third option"
-              }
-            ]
-          }
-        ]
-      }
+// Trigger words
+const WELCOME_TRIGGERS = ["hello", "hi", "hey", "start"];
+
+// Interactive message content
+const WELCOME_INTERACTIVE_MESSAGE = {
+  messaging_product: "whatsapp",
+  to: "",
+  type: "interactive",
+  interactive: {
+    type: "list",
+    header: {
+      type: "text",
+      text: "Message Header"
+    },
+    body: {
+      text: "This is a interactive list message"
+    },
+    footer: {
+      text: "This is the message footer"
+    },
+    action: {
+      button: "Tap for the options",
+      sections: [
+        {
+          title: "First Section",
+          rows: [
+            {
+              id: "first_option",
+              title: "First option",
+              description: "This is the description of the first option"
+            },
+            {
+              id: "second_option",
+              title: "Second option",
+              description: "This is the description of the second option"
+            }
+          ]
+        },
+        {
+          title: "Second Section",
+          rows: [
+            {
+              id: "third_option",
+              title: "Third option"
+            }
+          ]
+        }
+      ]
     }
   }
 };
@@ -81,7 +78,10 @@ async function initializeTemplates() {
     const welcomeTemplate = await templatesRef.doc('welcome_message').get();
     
     if (!welcomeTemplate.exists) {
-      await templatesRef.doc('welcome_message').set(WELCOME_TEMPLATE);
+      await templatesRef.doc('welcome_message').set({
+        triggers: WELCOME_TRIGGERS,
+        content: WELCOME_INTERACTIVE_MESSAGE
+      });
       console.log('✅ Created default welcome template');
     }
   } catch (error) {
@@ -127,7 +127,7 @@ app.post('/templates', async (req, res) => {
   try {
     const newTemplate = req.body;
     await usersRef.firestore.collection('whatsapp_templates').doc(newTemplate.name).set(newTemplate);
-    res.status(201).send(`Template ${newTemplate.name} created`);
+    res.status(201).send(`Template created`);
   } catch (error) {
     console.error('Error creating template:', error);
     res.status(500).send('Error creating template');
@@ -294,24 +294,24 @@ app.post('/webhook', async (req, res) => {
 // Handle list reply selections
 async function handleListReply(from, messageId, selectedId, selectedTitle) {
   switch (selectedId) {
-    case 'support_option':
+    case 'first_option':
       await sendTextMessage(
         from, 
-        "Please describe your support issue and we'll create a ticket for you.",
+        "You selected the first option. How can we assist you further?",
         messageId
       );
       break;
-    case 'products_option':
+    case 'second_option':
       await sendTextMessage(
         from,
-        "Here are our current products:\n\n1. Product A\n2. Product B\n3. Product C",
+        "You selected the second option. How can we assist you further?",
         messageId
       );
       break;
-    case 'account_option':
+    case 'third_option':
       await sendTextMessage(
         from,
-        "For account help, please visit our website or reply with your specific question.",
+        "You selected the third option. How can we assist you further?",
         messageId
       );
       break;
@@ -326,21 +326,11 @@ async function handleListReply(from, messageId, selectedId, selectedTitle) {
 
 // Handle button reply clicks
 async function handleButtonReply(from, messageId, selectedId, selectedTitle) {
-  switch (selectedId) {
-    case 'support_button':
-      await sendTextMessage(
-        from, 
-        "Please describe your support issue and we'll create a ticket for you.",
-        messageId
-      );
-      break;
-    default:
-      await sendTextMessage(
-        from,
-        `You clicked: ${selectedTitle}. How can we assist you further?`,
-        messageId
-      );
-  }
+  await sendTextMessage(
+    from,
+    `You clicked: ${selectedTitle}. How can we assist you further?`,
+    messageId
+  );
 }
 
 // Helper functions
@@ -425,13 +415,9 @@ async function sendTextMessage(to, text, contextMessageId = null) {
 
 async function sendInteractiveMessage(to, templateContent) {
   try {
-    // Create a deep copy of the template content to avoid modifying the original
     const payload = JSON.parse(JSON.stringify(templateContent));
-    
-    // Set the recipient and ensure proper format
     payload.to = to;
     
-    // Ensure required fields are present in the exact WhatsApp API format
     if (!payload.interactive) {
       throw new Error("Invalid template format: missing interactive property");
     }
@@ -457,7 +443,7 @@ async function sendInteractiveMessage(to, templateContent) {
 // Initialize server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  await initializeTemplates(); // Create default templates on startup
+  await initializeTemplates();
   console.log(`🚀 Server running on port ${PORT}`);
   console.log("📞 PHONE ID:", process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("🔐 TOKEN:", WHATSAPP_ACCESS_TOKEN?.slice(0, 6) + '...');
