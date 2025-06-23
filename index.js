@@ -18,8 +18,10 @@ const EMAIL_PASS = process.env.EMAIL_PASS;
 const ALERT_EMAIL = process.env.ALERT_EMAIL;
 
 // 🔥 Initialize Firebase
-const serviceAccount = require('./firebase.json');
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+admin.initializeApp({
+  credential: admin.credential.cert(firebaseConfig)
+});
 const db = admin.firestore();
 
 // 📧 Nodemailer setup
