@@ -33,70 +33,88 @@ const transporter = nodemailer.createTransport({
 // ✅ GET Root
 app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
 
-// ✅ Verify Webhook
+// ✅ Webhook Verification
 app.get('/webhook', (req, res) => {
   const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
   if (mode && token === WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
   res.sendStatus(403);
 });
 
-// ✅ POST Webhook
+// ✅ Webhook Receiver
 app.post('/webhook', async (req, res) => {
   const changes = req.body.entry?.[0]?.changes?.[0];
   const message = changes?.value?.messages?.[0];
   const profileName = message?.profile?.name;
   const from = message?.from;
 
-  if (message) {
-    const type = message.type;
-    const text = message.text?.body?.toLowerCase();
-    const messageId = message.id;
+  if (!message || !from) return res.sendStatus(200);
 
-    // Save last active time
-    const updateData = {
-  lastActive: Date.now(),
-  lastMessage: text
-};
+  const type = message.type;
+  const messageId = message.id;
+  let lastMessageText = null;
 
-if (profileName !== undefined) {
-  updateData.profileName = profileName;
-}
-
-await db.collection('users').doc(from).set(updateData, { merge: true });
-
-    await db.collection('whatsapp_logs').add({
-      from, type, message,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    if (type === 'text') {
-      if (text === 'hi') {
-        await replyMessage(from, `Hi ${profileName || 'there'} 😊, welcome!`, messageId);
-        await sendReplyButtons(from); // Start conversation
-      } else if (text === 'help') {
-        await sendMessage(from, 'An agent will contact you shortly.');
-        await sendEmailAlert(from, 'User requested help');
-      } else {
-        const aiReply = await getAIResponse(text);
-        await sendMessage(from, aiReply);
-      }
+  // Extract message content properly
+  if (type === 'text') {
+    lastMessageText = message.text?.body;
+  } else if (type === 'interactive') {
+    const interactive = message.interactive;
+    if (interactive?.type === 'button_reply') {
+      lastMessageText = interactive.button_reply?.title || interactive.button_reply?.id;
+    } else if (interactive?.type === 'list_reply') {
+      lastMessageText = interactive.list_reply?.title || interactive.list_reply?.id;
     }
+  }
 
-    if (type === 'interactive') {
-      const interactive = message.interactive;
-      if (interactive.type === 'list_reply') {
-        const userText = interactive.list_reply.title;
-        const aiReply = await getAIResponse(userText);
-        await sendMessage(from, aiReply);
-      } else if (interactive.type === 'button_reply') {
-        const replyId = interactive.button_reply.id;
-        if (replyId === 'to_agent') {
-          await sendMessage(from, 'Connecting you to a human agent. Please wait...');
-          await sendEmailAlert(from, 'User wants human support');
-        } else if (replyId === 'to_bot') {
-          await sendMessage(from, 'Okay, let’s continue with FredBot 🤖');
-          await sendList(from); // Continue with bot
-        }
+  // 📝 Prepare data for Firestore
+  const updateData = {
+    lastActive: Date.now(),
+  };
+  if (lastMessageText !== undefined) {
+    updateData.lastMessage = lastMessageText.toLowerCase();
+  }
+  if (profileName !== undefined) {
+    updateData.profileName = profileName;
+  }
+
+  await db.collection('users').doc(from).set(updateData, { merge: true });
+
+  // 📦 Log message
+  await db.collection('whatsapp_logs').add({
+    from,
+    type,
+    message,
+    timestamp: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  // 🤖 Handle message logic
+  if (type === 'text') {
+    const text = lastMessageText.toLowerCase();
+    if (text === 'hi') {
+      await replyMessage(from, `Hi ${profileName || 'there'} 😊, welcome!`, messageId);
+      await sendReplyButtons(from);
+    } else if (text === 'help') {
+      await sendMessage(from, 'An agent will contact you shortly.');
+      await sendEmailAlert(from, 'User requested help');
+    } else {
+      const aiReply = await getAIResponse(text);
+      await sendMessage(from, aiReply);
+    }
+  }
+
+  if (type === 'interactive') {
+    const interactive = message.interactive;
+    if (interactive.type === 'list_reply') {
+      const userText = interactive.list_reply?.title || interactive.list_reply?.id;
+      const aiReply = await getAIResponse(userText);
+      await sendMessage(from, aiReply);
+    } else if (interactive.type === 'button_reply') {
+      const replyId = interactive.button_reply.id;
+      if (replyId === 'to_agent') {
+        await sendMessage(from, 'Connecting you to a human agent. Please wait...');
+        await sendEmailAlert(from, 'User wants human support');
+      } else if (replyId === 'to_bot') {
+        await sendMessage(from, 'Okay, let’s continue with FredBot 🤖');
+        await sendList(from);
       }
     }
   }
@@ -104,7 +122,7 @@ await db.collection('users').doc(from).set(updateData, { merge: true });
   res.sendStatus(200);
 });
 
-// ✅ Follow-up every 1 minute (check inactivity)
+// ✅ Follow-up every 1 min for inactive users
 setInterval(async () => {
   const snapshot = await db.collection('users').get();
   const now = Date.now();
@@ -118,7 +136,7 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// ✅ Message Sending
+// ✅ Messaging Utils
 async function sendMessage(to, body) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -224,7 +242,6 @@ async function sendReplyButtons(to) {
   }
 }
 
-// ✅ Email Alerts
 async function sendEmailAlert(from, subjectText) {
   try {
     await transporter.sendMail({
