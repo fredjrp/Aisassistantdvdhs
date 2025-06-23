@@ -18,10 +18,13 @@ const EMAIL_PASS = process.env.EMAIL_PASS;
 const ALERT_EMAIL = process.env.ALERT_EMAIL;
 
 // 🔥 Initialize Firebase
-const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+// Fix: Convert escaped \n in private_key to actual newlines
+rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({
-  credential: admin.credential.cert(firebaseConfig)
+  credential: admin.credential.cert(rawConfig)
 });
+
 const db = admin.firestore();
 
 // 📧 Nodemailer setup
