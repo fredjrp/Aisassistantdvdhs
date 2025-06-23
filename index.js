@@ -417,17 +417,17 @@ async function sendTextMessage(to, text, contextMessageId = null) {
   console.log("💬 Sent text to", to);
 }
 
-async function sendInteractiveMessage(to, interactiveContent) {
+async function sendInteractiveMessage(to, templateContent) {
   try {
+    // Remove wrapping if already includes full payload
+    const payload = {
+      ...templateContent,
+      to // override to ensure correct recipient
+    };
+
     const response = await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to,
-        type: 'interactive',
-        interactive: interactiveContent
-      },
+      payload,
       {
         headers: {
           'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
