@@ -20,47 +20,51 @@ const transporter = nodemailer.createTransport({
 });
 
 // Default welcome template with exact WhatsApp API format
+// Default welcome template with exact WhatsApp API format
 const WELCOME_TEMPLATE = {
   name: "welcome_message",
   description: "Default welcome message for new clients",
   triggers: ["hello", "hi", "hey", "start"],
   content: {
     messaging_product: "whatsapp",
-    recipient_type: "individual",
     to: "", // This will be set when sending
     type: "interactive",
     interactive: {
       type: "list",
       header: {
         type: "text",
-        text: "Welcome to Freds Services"
+        text: "Message Header"
       },
       body: {
-        text: "How can we help you today?"
+        text: "This is a interactive list message"
       },
       footer: {
-        text: "Select an option below to get started"
+        text: "This is the message footer"
       },
       action: {
-        button: "Menu Options",
+        button: "Tap for the options",
         sections: [
           {
-            title: "Main Menu",
+            title: "First Section",
             rows: [
               {
-                id: "support_option",
-                title: "Get Support",
-                description: "Contact our support team"
+                id: "first_option",
+                title: "First option",
+                description: "This is the description of the first option"
               },
               {
-                id: "products_option",
-                title: "View Products",
-                description: "See what we offer"
-              },
+                id: "second_option",
+                title: "Second option",
+                description: "This is the description of the second option"
+              }
+            ]
+          },
+          {
+            title: "Second Section",
+            rows: [
               {
-                id: "account_option",
-                title: "Account Help",
-                description: "Manage your account"
+                id: "third_option",
+                title: "Third option"
               }
             ]
           }
@@ -407,7 +411,7 @@ async function sendTextMessage(to, text, contextMessageId = null) {
   }
 
   await axios.post(
-    `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    `https://graph.facebook.com/v23.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
     payload,
     {
       headers: {
@@ -433,7 +437,7 @@ async function sendInteractiveMessage(to, templateContent) {
     }
 
     const response = await axios.post(
-      `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      `https://graph.facebook.com/v23.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
       payload,
       {
         headers: {
