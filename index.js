@@ -109,11 +109,46 @@ app.post('/webhook', async (req, res) => {
       await sendMessage(from, aiReply);
     } else if (interactive.type === 'button_reply') {
       const replyId = interactive.button_reply.id;
-      if (replyId === 'to_agent') {
-        await sendMessage(from, 'Connecting you to a human agent. Please wait...');
-        await sendEmailAlert(from, 'User wants human support');
+if (replyId === 'to_agent') {
+  await sendMessage(from, 'Connecting you to a human agent. Please wait...');
+
+  // 🔍 Get the least busy or first available agent
+  const agentSnapshot = await db.collection('agents')
+    .where('active', '==', true)
+    .orderBy('assignedCount')
+    .limit(1)
+    .get();
+
+  if (agentSnapshot.empty) {
+    await sendMessage(from, 'All agents are currently busy. Please wait a moment.');
+    return;
+  }
+
+  const agentDoc = agentSnapshot.docs[0];
+  const agentId = agentDoc.id;
+  const agentData = agentDoc.data();
+
+  // 🤝 Assign user to this agent
+  await db.collection('users').doc(from).set({
+    assignedAgent: agentId,
+    agentName: agentData.name,
+    status: 'awaiting_response',
+    assignedAt: Date.now()
+  }, { merge: true });
+
+  // Update agent's assigned count
+  await db.collection('agents').doc(agentId).update({
+    assignedCount: admin.firestore.FieldValue.increment(1)
+  });
+
+  // 📨 Notify the agent (optional email or dashboard)
+  await sendEmailAlert(agentData.email || ALERT_EMAIL, `New user assigned: ${profileName || from}`);
+
+  await sendMessage(from, `✅ You've been connected to ${agentData.name}. They’ll respond shortly.`);
+}
+
       } else if (replyId === 'to_bot') {
-        await sendMessage(from, 'Okay, let’s continue with FredBot 🤖');
+        await sendMessage(from, 'Hi! Am Linda How May I be of Help Today?');
         await sendList(from);
       }
     }
@@ -306,6 +341,27 @@ app.post('/send', async (req, res) => {
     res.status(500).json({ error: 'Failed to send message' });
   }
 });
+
+// ✅ Create default agent if not exists
+(async () => {
+  const agentId = 'fred-jr';
+  const agentRef = db.collection('agents').doc(agentId);
+  const agentDoc = await agentRef.get();
+
+  if (!agentDoc.exists) {
+    await agentRef.set({
+      name: 'Fred Jr',
+      email: 'Juniorokovagng@gmail.com',
+      active: true,
+      assignedCount: 0,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    console.log('✅ Default agent "Fred Jr" created.');
+  } else {
+    console.log('✅ Default agent "Fred Jr" already exists.');
+  }
+})();
+
 
 
 // ✅ Start Server
