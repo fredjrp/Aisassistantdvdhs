@@ -279,6 +279,35 @@ async function getAIResponse(userText) {
   }
 }
 
+// ✅ Add this endpoint to allow agents to send manual replies
+app.post('/send', async (req, res) => {
+  const { to, message } = req.body;
+
+  if (!to || !message) {
+    return res.status(400).json({ error: 'Missing recipient or message' });
+  }
+
+  try {
+    await sendMessage(to, `👨‍💼 ${message}`);
+    
+    // Also log it into whatsapp_logs for the dashboard to display
+    await db.collection('whatsapp_logs').add({
+      from: to,
+      type: 'agent_reply',
+      message: { text: { body: message } },
+      sentByAgent: true,
+      agent: 'DashboardAgent',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Error in /send:', error.message);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+
 // ✅ Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
