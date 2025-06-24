@@ -107,53 +107,51 @@ app.post('/webhook', async (req, res) => {
       const userText = interactive.list_reply?.title || interactive.list_reply?.id;
       const aiReply = await getAIResponse(userText);
       await sendMessage(from, aiReply);
-    } else if (interactive.type === 'button_reply') {
-      const replyId = interactive.button_reply.id;
-if (replyId === 'to_agent') {
-  await sendMessage(from, 'Connecting you to a human agent. Please wait...');
+    } else 
 
-  // 🔍 Get the least busy or first available agent
-  const agentSnapshot = await db.collection('agents')
-    .where('active', '==', true)
-    .orderBy('assignedCount')
-    .limit(1)
-    .get();
+if (interactive.type === 'button_reply') {
+  const replyId = interactive.button_reply.id;
 
-  if (agentSnapshot.empty) {
-    await sendMessage(from, 'All agents are currently busy. Please wait a moment.');
-    return;
+  if (replyId === 'to_agent') {
+    await sendMessage(from, 'Connecting you to a human agent. Please wait...');
+
+    // 🔍 Get the least busy or first available agent
+    const agentSnapshot = await db.collection('agents')
+      .where('active', '==', true)
+      .orderBy('assignedCount')
+      .limit(1)
+      .get();
+
+    if (agentSnapshot.empty) {
+      await sendMessage(from, 'All agents are currently busy. Please wait a moment.');
+      return;
+    }
+
+    const agentDoc = agentSnapshot.docs[0];
+    const agentId = agentDoc.id;
+    const agentData = agentDoc.data();
+
+    // 🤝 Assign user to this agent
+    await db.collection('users').doc(from).set({
+      assignedAgent: agentId,
+      agentName: agentData.name,
+      status: 'awaiting_response',
+      assignedAt: Date.now()
+    }, { merge: true });
+
+    // Update agent's assigned count
+    await db.collection('agents').doc(agentId).update({
+      assignedCount: admin.firestore.FieldValue.increment(1)
+    });
+
+    // 📨 Notify the agent
+    await sendEmailAlert(agentData.email || ALERT_EMAIL, `New user assigned: ${profileName || from}`);
+    await sendMessage(from, `✅ You've been connected to ${agentData.name}. They’ll respond shortly.`);
+  } else if (replyId === 'to_bot') {
+    await sendMessage(from, 'Hi! Am Linda How May I be of Help Today?');
+    await sendList(from);
   }
-
-  const agentDoc = agentSnapshot.docs[0];
-  const agentId = agentDoc.id;
-  const agentData = agentDoc.data();
-
-  // 🤝 Assign user to this agent
-  await db.collection('users').doc(from).set({
-    assignedAgent: agentId,
-    agentName: agentData.name,
-    status: 'awaiting_response',
-    assignedAt: Date.now()
-  }, { merge: true });
-
-  // Update agent's assigned count
-  await db.collection('agents').doc(agentId).update({
-    assignedCount: admin.firestore.FieldValue.increment(1)
-  });
-
-  // 📨 Notify the agent (optional email or dashboard)
-  await sendEmailAlert(agentData.email || ALERT_EMAIL, `New user assigned: ${profileName || from}`);
-
-  await sendMessage(from, `✅ You've been connected to ${agentData.name}. They’ll respond shortly.`);
 }
-    }
-
-      } else if (replyId === 'to_bot') {
-        await sendMessage(from, 'Hi! Am Linda How May I be of Help Today?');
-        await sendList(from);
-      }
-    }
-  }
 
   res.sendStatus(200);
 });
