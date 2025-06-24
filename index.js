@@ -152,7 +152,7 @@ if (interactive.type === 'button_reply') {
     await sendList(from);
   }
 }
-
+  }
   res.sendStatus(200);
 });
 
