@@ -312,7 +312,7 @@ async function sendBusinessTypeList(to) {
       to,
       type: 'image',
       image: {
-        link: 'https://www.360dialog.com/wp-content/uploads/2024/10/convert-real-people-content-2x-hmp.png',
+        link: 'https://www.360dialog.com/wp-content/uploads/2024/10/measurable-impact-content-2x-hmp.png',
         caption: '✨ Find tailored digital tools for your business journey.'
       }
     }, {
