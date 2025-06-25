@@ -269,34 +269,93 @@ async function sendMainMenu(to) {
 
 async function sendBusinessTypeList(to) {
   try {
+    // Optional: Send a banner image first
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: {
+        link: 'https://www.360dialog.com/wp-content/uploads/2024/10/convert-real-people-content-2x-hmp.png',
+        caption: '✨ Find tailored digital tools for your business journey.'
+      }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Then send the interactive list message
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
       type: 'interactive',
       interactive: {
         type: 'list',
-        header: { type: 'text', text: '🏢 Select Your Business' },
-        body: { text: 'Experience tailored solutions for:' },
-        footer: { text: 'Official Meta Partner' },
+        header: { type: 'text', text: '🏢 Select Your Business Type' },
+        body: { text: 'Choose a category to explore solutions made for you.' },
+        footer: { text: 'Official Meta Partner • Trusted & Verified' },
         action: {
-          button: 'Choose',
+          button: 'Choose a Category',
           sections: [
             {
-              title: 'Retail & Hospitality',
+              title: '🛍️ Retail & E-commerce',
               rows: [
-                { id: 'biz_online_store', title: '🛍️ Online Store' },
-                { id: 'biz_offline_store', title: '🏬 Physical Store' },
-                { id: 'biz_restaurant', title: '🍽️ Restaurant' },
-                { id: 'biz_hotel', title: '🏨 Hotel' }
+                {
+                  id: 'biz_online_store',
+                  title: 'Online Store',
+                  description: 'E-commerce automation & customer support'
+                },
+                {
+                  id: 'biz_offline_store',
+                  title: 'Physical Store',
+                  description: 'POS, payments & inventory tools'
+                }
               ]
             },
             {
-              title: 'Services & More',
+              title: '🍽️ Food & Hospitality',
               rows: [
-                { id: 'biz_broker', title: '📈 Stock Broker' },
-                { id: 'biz_logistics', title: '🚚 Logistics' },
-                { id: 'biz_cyber', title: '💻 Cyber Cafe' },
-                { id: 'biz_influencer', title: '🌟 Influencer' }
+                {
+                  id: 'biz_restaurant',
+                  title: 'Restaurant',
+                  description: 'Manage menus, orders & delivery with ease'
+                },
+                {
+                  id: 'biz_hotel',
+                  title: 'Hotel',
+                  description: 'Booking systems & customer experience'
+                }
+              ]
+            },
+            {
+              title: '💼 Professional Services',
+              rows: [
+                {
+                  id: 'biz_broker',
+                  title: 'Stock Broker',
+                  description: 'Client alerts, CRM & real-time updates'
+                },
+                {
+                  id: 'biz_logistics',
+                  title: 'Logistics',
+                  description: 'Track orders, drivers & operations'
+                }
+              ]
+            },
+            {
+              title: '🌐 Digital & Creative',
+              rows: [
+                {
+                  id: 'biz_cyber',
+                  title: 'Cyber Cafe',
+                  description: 'Automate printing, payments & booking'
+                },
+                {
+                  id: 'biz_influencer',
+                  title: 'Influencer',
+                  description: 'Grow engagement & monetize your brand'
+                }
               ]
             }
           ]
@@ -308,6 +367,7 @@ async function sendBusinessTypeList(to) {
         'Content-Type': 'application/json'
       }
     });
+
   } catch (err) {
     console.error('❌ Business list error:', err.response?.data || err.message);
   }
