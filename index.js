@@ -101,6 +101,57 @@ async function sendMessage(to, text) {
   }
 }
 
+async function sendContactCard(to) {
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'contacts',
+      contacts: [
+        {
+          name: {
+            formatted_name: "Fred Junior",
+            first_name: "Fred",
+            last_name: "Junior"
+          },
+          org: {
+            company: "Fred's Computers",
+            department: "Support",
+            title: "Founder & Automation Expert"
+          },
+          phones: [
+            {
+              phone: "+254703738935",
+              type: "mobile",
+              wa_id: "254703738935"
+            }
+          ],
+          emails: [
+            {
+              email: "juniorokovagng@gmail.com",
+              type: "work"
+            }
+          ],
+          urls: [
+            {
+              url: "https://fredscomputers.co.ke",
+              type: "work"
+            }
+          ]
+        }
+      ]
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error("❌ Contact send error:", err.response?.data || err.message);
+  }
+}
+
+
   async function replyMessage(to, text, messageId) {
   await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
     messaging_product: 'whatsapp',
@@ -156,6 +207,7 @@ async function sendMessage(to, text) {
       else if (userSelection === 'support') {
         await sendMessage(from, "Please describe your issue and an agent will contact you shortly.");
         await sendEmailAlert(from, "User requested support");
+        await sendContactCard(from);
       }
       else if (userSelection === 'confirm_buy') {
         await sendPaymentMethods(from);
@@ -268,6 +320,19 @@ async function sendPlanDetails(to, planType) {
         "✔️ CRM integration"
       ],
       cta: "Best for scaling businesses!"
+    },
+    enterprise: {
+      name: "🏢 Enterprise Plan",
+      price: "Custom Pricing",
+      features: [
+        "✔️ Everything in Pro PLUS",
+        "✔️ Unlimited conversations",
+        "✔️ Dedicated account manager",
+        "✔️ Onboarding & team training",
+        "✔️ SLA-backed uptime",
+        "✔️ Multi-agent live chat support"
+      ],
+      cta: "Ideal for large or complex teams!"
     }
   };
 
@@ -287,8 +352,9 @@ async function sendPlanDetails(to, planType) {
         },
         action: {
           buttons: [
-            { type: 'reply', reply: { id: 'confirm_buy', title: '✅ Buy Now' } },
-            { type: 'reply', reply: { id: 'to_agent', title: '💬 Talk to Sales' } }
+            { type: 'reply', reply: { id: 'confirm_buy', title: 'Join Now' } },
+            { type: 'reply', reply: { id: 'to_agent', title: 'Talk to Sales' } },
+            { type: 'reply', reply: { id: 'more_info', title: 'Request PDF Info' } }
           ]
         }
       }
@@ -321,14 +387,16 @@ async function sendPaymentMethods(to) {
               title: 'Digital Payments',
               rows: [
                 { id: 'pay_mpesa', title: 'M-Pesa', description: 'Pay via Lipa Na M-Pesa' },
-                { id: 'pay_card', title: 'Credit/Debit Card', description: 'Visa, Mastercard, etc' }
+                { id: 'pay_card', title: 'Credit/Debit Card', description: 'Visa, Mastercard, etc' },
+                { id: 'pay_paypal', title: 'PayPal', description: 'Use your PayPal balance' }
               ]
             },
             {
               title: 'Other Options',
               rows: [
                 { id: 'pay_bank', title: 'Bank Transfer', description: 'Direct to our account' },
-                { id: 'pay_other', title: 'Other Method', description: 'Request alternative' }
+                { id: 'pay_crypto', title: 'Crypto', description: 'BTC, ETH, or USDT' },
+                { id: 'pay_other', title: 'Other Method', description: 'Request alternative payment' }
               ]
             }
           ]
@@ -344,7 +412,6 @@ async function sendPaymentMethods(to) {
     console.error('❌ Payment methods error:', err.response?.data || err.message);
   }
 }
-
 
 
 async function sendEnterpriseContactForm(to) {
@@ -788,14 +855,14 @@ async function sendBusinessDemoFlow(to, businessType) {
       type: 'interactive',
       interactive: {
         type: 'button',
-        header: { type: 'text', text: `🌟 ${businessType.replace('biz_', '').replace('_', ' ').toUpperCase()} FLOW` },
+        header: { type: 'text', text: ` ${businessType.replace('biz_', '').replace('_', ' ').toUpperCase()} FLOW` },
         body: { 
           text: `Here's how it works:\n\n${flow.steps.join('\n')}\n\nTry keywords: ${flow.keywords.slice(0, 3).join(', ')}` 
         },
         action: {
           buttons: [
-            { type: 'reply', reply: { id: 'buy_now', title: '🚀 Get Started' } },
-            { type: 'reply', reply: { id: 'more_demo', title: '🔍 See More' } }
+            { type: 'reply', reply: { id: 'buy_now', title: 'Get Started' } },
+            { type: 'reply', reply: { id: 'more_demo', title: 'See More' } }
           ]
         }
       }
@@ -844,11 +911,11 @@ async function sendExtendedDemo(to, businessType) {
 
 async function sendBuyEncouragement(to) {
   const stats = [
-    "📈 3.6x higher conversions than web",
-    "💬 85% faster response times",
-    "🤖 24/7 AI assistant handles 80% queries",
-    "🔒 Meta-verified security",
-    "📊 Real-time dashboard with ROAS tracking"
+    "3.6x higher conversions than web",
+    "85% faster response times",
+    "24/7 AI assistant handles 80% queries",
+    "Meta-verified security",
+    "Real-time dashboard with ROAS tracking"
   ];
 
   for (const stat of stats) {
@@ -870,8 +937,8 @@ async function sendFinalCTA(to) {
         },
         action: {
           buttons: [
-            { type: 'reply', reply: { id: 'confirm_buy', title: '🛒 Buy Now' } },
-            { type: 'reply', reply: { id: 'ai_guide', title: '🤖 AI Suggestions' } }
+            { type: 'reply', reply: { id: 'confirm_buy', title: 'Join Now' } },
+            { type: 'reply', reply: { id: 'ai_guide', title: 'Linda Suggestions' } }
           ]
         }
       }
@@ -895,7 +962,7 @@ async function sendPurchaseOptions(to) {
       interactive: {
         type: 'list',
         header: { type: 'text', text: '💰 Purchase Options' },
-        body: { text: 'Select your package:' },
+        body: { text: 'Select your preferred package below:' },
         footer: { text: 'All prices include Meta verification' },
         action: {
           button: 'Choose',
@@ -903,15 +970,17 @@ async function sendPurchaseOptions(to) {
             {
               title: 'Starter Plans',
               rows: [
-                { id: 'plan_starter', title: '🌱 Starter ($99/mo)' },
-                { id: 'plan_pro', title: '🚀 Pro ($299/mo)' }
+                { id: 'plan_basic', title: '🟢 Basic ($49/mo)', description: 'For individuals and small teams' },
+                { id: 'plan_starter', title: '🌱 Starter ($99/mo)', description: 'For growing businesses' },
+                { id: 'plan_pro', title: '🚀 Pro ($299/mo)', description: 'Advanced features for scaling' }
               ]
             },
             {
-              title: 'Enterprise',
+              title: 'Enterprise & Add-ons',
               rows: [
-                { id: 'plan_enterprise', title: '🏢 Custom Solution' },
-                { id: 'plan_contact', title: '📞 Schedule Call' }
+                { id: 'plan_premium', title: '💎 Premium Support ($499/mo)', description: 'Priority access and support' },
+                { id: 'plan_enterprise', title: '🏢 Custom Solution', description: 'Tailored for large businesses' },
+                { id: 'plan_contact', title: '📞 Schedule Call', description: 'Talk to our team directly' }
               ]
             }
           ]
@@ -957,7 +1026,7 @@ async function sendAISuggestions(to) {
     "Keyword: 'agent' - Human help"
   ];
 
-  await sendMessage(to, "🤖 AI Suggestions:\n\n" + msgs.join('\n'));
+  await sendMessage(to, "My Suggestions:\n\n" + msgs.join('\n'));
 }
 
 async function sendEmailAlert(from, subjectText) {
