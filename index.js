@@ -114,6 +114,14 @@ app.post('/webhook', async (req, res) => {
         await sendBuyEncouragement(from);
         await sendFinalCTA(from);
       }
+     else if (userSelection === 'pricing') {
+       await sendPurchaseOptions(from);
+    }
+     else if (userSelection === 'support') {
+       await sendMessage(from, "Please describe your issue and an agent will contact you shortly.");
+       await sendEmailAlert(from, "User requested support");
+     }
+
       else if (userSelection === 'confirm_buy') {
         await sendPurchaseOptions(from);
       }
