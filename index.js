@@ -194,7 +194,7 @@ async function sendContactCard(to) {
       }
 
        if (userSelection === 'benefits') {
-        await sendBusinessDemoFlow(from);
+        await sendPlanDetails(from);
       }
  
       else if (userSelection.startsWith('biz_')) {
