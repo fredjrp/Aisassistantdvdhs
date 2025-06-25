@@ -83,22 +83,21 @@ app.post('/webhook', async (req, res) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
-if (type === 'text') {
-  const text = lastMessageText.toLowerCase();
-
-  if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
-    await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
-    await sendMainMenu(from);
-
-  } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
-    await sendMessage(from, 'An agent will contact you shortly.');
-    await sendEmailAlert(from, 'User requested help');
-
-  } else {
-    const aiReply = await getAIResponse(text, from);
-    await sendMessage(from, aiReply);
+  if (type === 'text') {
+    const text = lastMessageText.toLowerCase();
+    if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
+      await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
+      await sendMainMenu(from);
+    } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
+      await sendMessage(from, 'An agent will contact you shortly.');
+      await sendEmailAlert(from, 'User requested help');
+    } else if (text.includes('menu') || text.includes('options') || text.includes('start')) {
+      await sendMainMenu(from);
+    } else {
+      const aiReply = await getAIResponse(text, from);
+      await sendMessage(from, aiReply);
+    }
   }
-     }
 
   if (type === 'interactive') {
     const interactive = message.interactive;
@@ -117,21 +116,32 @@ if (type === 'text') {
         await sendBuyEncouragement(from);
         await sendFinalCTA(from);
       }
-     else if (userSelection === 'pricing') {
-       await sendPurchaseOptions(from);
-    }
-     else if (userSelection === 'support') {
-       await sendMessage(from, "Please describe your issue and an agent will contact you shortly.");
-       await sendEmailAlert(from, "User requested support");
-     }
-
-      else if (userSelection === 'confirm_buy') {
+      else if (userSelection === 'pricing') {
         await sendPurchaseOptions(from);
+      }
+      else if (userSelection === 'support') {
+        await sendMessage(from, "Please describe your issue and an agent will contact you shortly.");
+        await sendEmailAlert(from, "User requested support");
+      }
+      else if (userSelection === 'confirm_buy') {
+        await sendPaymentMethods(from);
       }
       else if (userSelection === 'more_demo') {
         const userRef = await db.collection('users').doc(from).get();
         const lastBiz = userRef.data()?.lastBusinessType || 'biz_online_store';
         await sendExtendedDemo(from, lastBiz);
+      }
+      else if (userSelection === 'plan_starter') {
+        await sendPlanDetails(from, 'starter');
+      }
+      else if (userSelection === 'plan_pro') {
+        await sendPlanDetails(from, 'pro');
+      }
+      else if (userSelection === 'plan_enterprise') {
+        await sendEnterpriseContactForm(from);
+      }
+      else if (userSelection === 'plan_contact') {
+        await sendContactScheduler(from);
       }
       else {
         const aiReply = await getAIResponse(lastMessageText, from);
@@ -178,43 +188,75 @@ if (type === 'text') {
       else if (replyId === 'ai_guide') {
         await sendAISuggestions(from);
       }
-       else if (replyId === 'buy_now') {
-       await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
-       await sendBuyEncouragement(from);
-       await sendFinalCTA(from);
+      else if (replyId === 'buy_now') {
+        await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
+        await sendBuyEncouragement(from);
+        await sendFinalCTA(from);
       }
       else if (replyId === 'more_demo') {
-       const userRef = await db.collection('users').doc(from).get();
-       const lastBiz = userRef.data()?.lastBusinessType || 'biz_online_store';
-       await sendExtendedDemo(from, lastBiz);
-     }
+        const userRef = await db.collection('users').doc(from).get();
+        const lastBiz = userRef.data()?.lastBusinessType || 'biz_online_store';
+        await sendExtendedDemo(from, lastBiz);
+      }
+      else if (replyId === 'confirm_buy') {
+        await sendPaymentMethods(from);
+      }
     }
   }
   res.sendStatus(200);
 });
 
-// ✅ Follow-up every 1 min for inactive users
-setInterval(async () => {
-  const snapshot = await db.collection('users').get();
-  const now = Date.now();
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
-    if (now - data.lastActive > 5 * 60 * 1000 && !data.closed) {
-      const from = doc.id;
-      await sendMessage(from, `Hey ${data.profileName || ''}, we noticed you haven't replied. Let us know if you'd like to continue or restart later.`);
-      await db.collection('users').doc(from).update({ closed: true });
+// ================== NEW INTERACTIVE FLOWS ================== //
+async function sendPlanDetails(to, planType) {
+  const plans = {
+    starter: {
+      name: "🌱 Starter Plan",
+      price: "Ksh950/month",
+      features: [
+        "✔️ WhatsApp Business API setup",
+        "✔️ Basic automation flows",
+        "✔️ 500 conversations/month",
+        "✔️ Email support (24h response)",
+        "✔️ Meta verification included"
+      ],
+      cta: "Perfect for new businesses!"
+    },
+    pro: {
+      name: "🚀 Pro Plan",
+      price: "Ksh9,999/month",
+      features: [
+        "✔️ Everything in Starter PLUS",
+        "✔️ Advanced AI automation",
+        "✔️ 5,000 conversations/month",
+        "✔️ Priority phone/chat support",
+        "✔️ Performance analytics dashboard",
+        "✔️ CRM integration"
+      ],
+      cta: "Best for scaling businesses!"
     }
-  }
-}, 60 * 1000);
+  };
 
-// ================== MESSAGE UTILITIES ================== //
-async function sendMessage(to, body) {
+  const plan = plans[planType] || plans.starter;
+
   try {
+    await sendMessage(to, `✨ ${plan.name} (${plan.price})\n\n${plan.features.join('\n')}\n\n${plan.cta}`);
+    
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
-      type: 'text',
-      text: { body }
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { 
+          text: `Ready to activate your ${plan.name}?` 
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'confirm_buy', title: '✅ Buy Now' } },
+            { type: 'reply', reply: { id: 'to_agent', title: '💬 Talk to Sales' } }
+          ]
+        }
+      }
     }, {
       headers: {
         Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -222,18 +264,41 @@ async function sendMessage(to, body) {
       }
     });
   } catch (err) {
-    console.error('❌ Send error:', err.response?.data || err.message);
+    console.error('❌ Plan details error:', err.response?.data || err.message);
   }
 }
 
-async function replyMessage(to, body, messageId) {
+async function sendPaymentMethods(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
-      context: { message_id: messageId },
-      type: 'text',
-      text: { body }
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        header: { type: 'text', text: '💳 Payment Options' },
+        body: { text: 'Choose your preferred payment method:' },
+        footer: { text: 'Instant activation after payment' },
+        action: {
+          button: 'Select',
+          sections: [
+            {
+              title: 'Digital Payments',
+              rows: [
+                { id: 'pay_mpesa', title: 'M-Pesa', description: 'Pay via Lipa Na M-Pesa' },
+                { id: 'pay_card', title: 'Credit/Debit Card', description: 'Visa, Mastercard, etc' }
+              ]
+            },
+            {
+              title: 'Other Options',
+              rows: [
+                { id: 'pay_bank', title: 'Bank Transfer', description: 'Direct to our account' },
+                { id: 'pay_other', title: 'Other Method', description: 'Request alternative' }
+              ]
+            }
+          ]
+        }
+      }
     }, {
       headers: {
         Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -241,11 +306,134 @@ async function replyMessage(to, body, messageId) {
       }
     });
   } catch (err) {
-    console.error('❌ Reply error:', err.response?.data || err.message);
+    console.error('❌ Payment methods error:', err.response?.data || err.message);
   }
 }
 
-// ================== DEMO FLOW MENUS ================== //
+async function sendEnterpriseContactForm(to) {
+  try {
+    await sendMessage(to, `📋 Let's customize your enterprise solution!\n\nPlease provide:\n1. Your business name\n2. Estimated monthly message volume\n3. Any special requirements\n\nOr type 'cancel' to return.`);
+    
+    await db.collection('users').doc(to).update({
+      awaitingEnterpriseDetails: true,
+      enterpriseRequestAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    console.error('❌ Enterprise form error:', err.response?.data || err.message);
+  }
+}
+
+async function sendContactScheduler(to) {
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { 
+          text: "📅 Let's schedule your consultation!\n\nPick an option below or suggest your preferred time." 
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'schedule_am', title: 'Morning (9AM-12PM)' } },
+            { type: 'reply', reply: { id: 'schedule_pm', title: 'Afternoon (1PM-5PM)' } },
+            { type: 'reply', reply: { id: 'schedule_custom', title: 'Suggest Time' } }
+          ]
+        }
+      }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error('❌ Scheduler error:', err.response?.data || err.message);
+  }
+}
+
+// ================== ENHANCED AI HANDLER ================== //
+async function getAIResponse(userText, userId) {
+  try {
+    const userRef = await db.collection('users').doc(userId).get();
+    const userData = userRef.data() || {};
+    const lastBiz = userData.lastBusinessType || 'general';
+    const profileName = userData.profileName || 'friend';
+
+    // Check if we're in a special flow
+    if (userData.awaitingEnterpriseDetails) {
+      await db.collection('enterprise_requests').add({
+        user: userId,
+        details: userText,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+      
+      await db.collection('users').doc(userId).update({
+        awaitingEnterpriseDetails: false
+      });
+      
+      return `Thank you, ${profileName}! Our enterprise team will contact you within 1 business day with a custom proposal. Meanwhile, explore our features with 'demo' or ask me anything!`;
+    }
+
+    // Enhanced personality prompts
+    const personalityTraits = [
+      "You're Fred's Inc AI (Official Meta Partner) - charming, witty, and persuasive",
+      "Use emojis tastefully to enhance communication",
+      "Address users by name when known",
+      "When unsure, suggest trying 'demo' or 'pricing'",
+      "For objections, highlight 3.6x ROAS and Meta partnership"
+    ];
+
+    const businessContexts = {
+      biz_online_store: "eCommerce store looking to boost sales",
+      biz_hotel: "hotel aiming to streamline bookings",
+      biz_restaurant: "restaurant wanting faster orders",
+      biz_broker: "stock broker needing client alerts",
+      biz_logistics: "logistics company optimizing deliveries",
+      biz_cyber: "cyber cafe automating services"
+    };
+
+    const context = businessContexts[lastBiz] || "business exploring WhatsApp solutions";
+
+    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+      model: "mistralai/mistral-7b-instruct",
+      messages: [
+        { 
+          role: "system", 
+          content: `${personalityTraits.join('\n')}\n\nCurrent context: Helping ${profileName} with their ${context}. Key goals:\n1. Identify pain points\n2. Offer tailored solutions\n3. Guide to relevant menus ('demo', 'pricing')\n4. Close with clear CTAs\n\nKeep responses conversational yet professional under 3 sentences.` 
+        },
+        { role: "user", content: userText }
+      ],
+      temperature: 0.7 // Adds some creativity
+    }, {
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 60000
+    });
+
+    let response = res.data.choices?.[0]?.message?.content || "Try 'menu' for options.";
+    
+    // Add smart suggestions to responses
+    if (response.length < 100 && !response.includes('menu') && !response.includes('demo')) {
+      const suggestions = {
+        biz_online_store: "\n\nTry 'demo' to see our eCommerce flows or 'pricing' for plans!",
+        biz_hotel: "\n\nWant to see booking automation? Just say 'demo'!",
+        general: "\n\nExplore options with 'menu' or ask me anything!"
+      };
+      response += suggestions[lastBiz] || suggestions.general;
+    }
+
+    return response;
+  } catch (err) {
+    console.error('❌ AI error:', err.response?.data || err.message);
+    return "🔧 My circuits are a bit busy! Try 'menu' to continue or 'help' for support.";
+  }
+}
+
+// ================== EXISTING FUNCTIONS (UPDATED) ================== //
 async function sendMainMenu(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -272,6 +460,11 @@ async function sendMainMenu(to) {
                   id: 'demo',
                   title: 'Try Demo',
                   description: 'Experience an interactive sample journey'
+                },
+                {
+                  id: 'case_studies',
+                  title: 'Success Stories',
+                  description: 'See how businesses like yours succeeded'
                 }
               ]
             },
@@ -287,6 +480,11 @@ async function sendMainMenu(to) {
                   id: 'support',
                   title: 'Talk to Support',
                   description: 'Need help? Reach a real human agent now'
+                },
+                {
+                  id: 'onboarding',
+                  title: 'Quick Start Guide',
+                  description: 'Get running in minutes'
                 }
               ]
             }
@@ -306,23 +504,6 @@ async function sendMainMenu(to) {
 
 async function sendBusinessTypeList(to) {
   try {
-    // Optional: Send a banner image first
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'image',
-      image: {
-        link: 'https://www.360dialog.com/wp-content/uploads/2024/10/measurable-impact-content-2x-hmp.png',
-        caption: '✨ Find tailored digital tools for your business journey.'
-      }
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    // Then send the interactive list message
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
@@ -347,6 +528,11 @@ async function sendBusinessTypeList(to) {
                   id: 'biz_offline_store',
                   title: 'Physical Store',
                   description: 'POS, payments & inventory tools'
+                },
+                {
+                  id: 'biz_fashion',
+                  title: 'Fashion Boutique',
+                  description: 'Virtual try-ons & styling'
                 }
               ]
             },
@@ -356,12 +542,17 @@ async function sendBusinessTypeList(to) {
                 {
                   id: 'biz_restaurant',
                   title: 'Restaurant',
-                  description: 'Manage menus, orders & delivery with ease'
+                  description: 'Manage menus, orders & delivery'
                 },
                 {
                   id: 'biz_hotel',
                   title: 'Hotel',
-                  description: 'Booking systems & customer experience'
+                  description: 'Booking systems & concierge'
+                },
+                {
+                  id: 'biz_catering',
+                  title: 'Catering',
+                  description: 'Event bookings & menus'
                 }
               ]
             },
@@ -371,27 +562,17 @@ async function sendBusinessTypeList(to) {
                 {
                   id: 'biz_broker',
                   title: 'Stock Broker',
-                  description: 'Client alerts, CRM & real-time updates'
+                  description: 'Client alerts & CRM'
                 },
                 {
                   id: 'biz_logistics',
                   title: 'Logistics',
-                  description: 'Track orders, drivers & operations'
-                }
-              ]
-            },
-            {
-              title: '🌐 Digital & Creative',
-              rows: [
-                {
-                  id: 'biz_cyber',
-                  title: 'Cyber Cafe',
-                  description: 'Automate printing, payments & booking'
+                  description: 'Track orders & drivers'
                 },
                 {
-                  id: 'biz_influencer',
-                  title: 'Influencer',
-                  description: 'Grow engagement & monetize your brand'
+                  id: 'biz_consulting',
+                  title: 'Consulting',
+                  description: 'Appointment scheduling'
                 }
               ]
             }
@@ -404,7 +585,6 @@ async function sendBusinessTypeList(to) {
         'Content-Type': 'application/json'
       }
     });
-
   } catch (err) {
     console.error('❌ Business list error:', err.response?.data || err.message);
   }
@@ -615,23 +795,6 @@ async function sendFinalCTA(to) {
 
 async function sendPurchaseOptions(to) {
   try {
-    // 1. Send an optional image header first
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'image',
-      image: {
-        link: 'https://www.360dialog.com/wp-content/uploads/2024/10/meta-optimized-tabs-2x-hmp.png', // replace with your hosted image
-        caption: 'Explore verified pricing plans for your business growth 🚀'
-      }
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    // 2. Send the interactive list message
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
@@ -639,41 +802,23 @@ async function sendPurchaseOptions(to) {
       interactive: {
         type: 'list',
         header: { type: 'text', text: '💰 Purchase Options' },
-        body: {
-          text: 'Choose a plan that fits your business. All plans include Meta verification and AI support.'
-        },
-        footer: { text: '100% setup done for you — cancel anytime.' },
+        body: { text: 'Select your package:' },
+        footer: { text: 'All prices include Meta verification' },
         action: {
-          button: 'View Plans',
+          button: 'Choose',
           sections: [
             {
-              title: '🌱 Starter Plans',
+              title: 'Starter Plans',
               rows: [
-                {
-                  id: 'plan_starter',
-                  title: 'Starter – Ksh950/mo',
-                  description: 'For new businesses. Includes WhatsApp automation and 24/7 support.'
-                },
-                {
-                  id: 'plan_pro',
-                  title: 'Pro – Ksh9,999/mo',
-                  description: 'Advanced analytics, flows & AI replies. Best for scaling.'
-                }
+                { id: 'plan_starter', title: '🌱 Starter ($99/mo)' },
+                { id: 'plan_pro', title: '🚀 Pro ($299/mo)' }
               ]
             },
             {
-              title: '🏢 Enterprise Plans',
+              title: 'Enterprise',
               rows: [
-                {
-                  id: 'plan_enterprise',
-                  title: 'Custom Solution',
-                  description: 'Tailored WhatsApp CRM setup for high-volume teams'
-                },
-                {
-                  id: 'plan_contact',
-                  title: '📞 Schedule a Call',
-                  description: 'Talk to our strategist to build your growth roadmap'
-                }
+                { id: 'plan_enterprise', title: '🏢 Custom Solution' },
+                { id: 'plan_contact', title: '📞 Schedule Call' }
               ]
             }
           ]
@@ -685,7 +830,6 @@ async function sendPurchaseOptions(to) {
         'Content-Type': 'application/json'
       }
     });
-
   } catch (err) {
     console.error('❌ Purchase error:', err.response?.data || err.message);
   }
@@ -723,41 +867,6 @@ async function sendAISuggestions(to) {
   await sendMessage(to, "🤖 AI Suggestions:\n\n" + msgs.join('\n'));
 }
 
-// ✅ AI Handler
-async function getAIResponse(userText, userId) {
-  try {
-    const userRef = await db.collection('users').doc(userId).get();
-    const lastBiz = userRef.data()?.lastBusinessType || 'general';
-    const profileName = userRef.data()?.profileName || 'there';
-
-    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistralai/mistral-7b-instruct",
-      messages: [
-        { 
-          role: "system", 
-          content: `You're Fred's Inc AI (Official Meta Partner). Context: ${lastBiz}. Guide users to:\
-                    1. Recognize pain points\
-                    2. Offer WhatsApp solutions\
-                    3. Suggest next steps ('demo', 'buy', etc)\
-                    Keep responses under 2 sentences. Use ${profileName}'s name if known.`
-        },
-        { role: "user", content: userText }
-      ]
-    }, {
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 60000
-    });
-
-    return res.data.choices?.[0]?.message?.content || "Try 'menu' for options.";
-  } catch (err) {
-    console.error('❌ AI error:', err.response?.data || err.message);
-    return "🔧 System updating. Try 'demo' to continue.";
-  }
-}
-
 async function sendEmailAlert(from, subjectText) {
   try {
     await transporter.sendMail({
@@ -770,6 +879,22 @@ async function sendEmailAlert(from, subjectText) {
     console.error('❌ Email error:', error.message);
   }
 }
+
+// ... [Previous functions like sendBusinessDemoFlow, sendExtendedDemo, etc. remain exactly the same] ...
+
+// ✅ Follow-up every 1 min for inactive users
+setInterval(async () => {
+  const snapshot = await db.collection('users').get();
+  const now = Date.now();
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    if (now - data.lastActive > 5 * 60 * 1000 && !data.closed) {
+      const from = doc.id;
+      await sendMessage(from, `Hey ${data.profileName || ''}, we noticed you haven't replied. Let us know if you'd like to continue or restart later.`);
+      await db.collection('users').doc(from).update({ closed: true });
+    }
+  }
+}, 60 * 1000);
 
 // ✅ Create default agent
 (async () => {
