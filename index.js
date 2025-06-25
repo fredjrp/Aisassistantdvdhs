@@ -317,7 +317,6 @@ async function sendContactCard(to) {
         await sendPaymentMethods(from);
       }
     }
-}
   }
   res.sendStatus(200);
 });
