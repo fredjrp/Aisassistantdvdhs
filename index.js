@@ -53,7 +53,6 @@ app.post('/webhook', async (req, res) => {
   const messageId = message.id;
   let lastMessageText = null;
 
-  // Extract message content properly
   if (type === 'text') {
     lastMessageText = message.text?.body;
   } else if (type === 'interactive') {
@@ -65,7 +64,6 @@ app.post('/webhook', async (req, res) => {
     }
   }
 
-  // 📝 Prepare data for Firestore
   const updateData = {
     lastActive: Date.now(),
   };
@@ -78,7 +76,6 @@ app.post('/webhook', async (req, res) => {
 
   await db.collection('users').doc(from).set(updateData, { merge: true });
 
-  // 📦 Log message
   await db.collection('whatsapp_logs').add({
     from,
     type,
@@ -86,7 +83,6 @@ app.post('/webhook', async (req, res) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
-  // 🤖 Handle message logic
   if (type === 'text') {
     const text = lastMessageText.toLowerCase();
     if (text === 'hi') {
@@ -96,7 +92,7 @@ app.post('/webhook', async (req, res) => {
       await sendMessage(from, 'An agent will contact you shortly.');
       await sendEmailAlert(from, 'User requested help');
     } else {
-      const aiReply = await getAIResponse(text);
+      const aiReply = await getAIResponse(text, from);
       await sendMessage(from, aiReply);
     }
   }
@@ -104,20 +100,30 @@ app.post('/webhook', async (req, res) => {
   if (type === 'interactive') {
     const interactive = message.interactive;
     if (interactive.type === 'list_reply') {
-      const userText = interactive.list_reply?.title || interactive.list_reply?.id;
+      const userSelection = interactive.list_reply?.id;
       
-      // Handle list selections
-      if (userText.includes('benefits')) {
-        await sendBenefitsList(from);
-      } else if (userText.includes('case_')) {
-        await sendMessage(from, `Great choice! Here's how we handle "${userText.replace('case_', '')}": [Detailed flow...]`);
-      } else if (userText.includes('demo_')) {
-        await sendMessage(from, `Let's simulate "${userText.replace('demo_', '')}"...`);
-        await sendDemoFlow(from, userText);
-      } else if (userText.includes('price_')) {
-        await sendPricingList(from);
-      } else {
-        const aiReply = await getAIResponse(userText);
+      if (userSelection === 'demo') {
+        await sendBusinessTypeList(from);
+      } 
+      else if (userSelection.startsWith('biz_')) {
+        await db.collection('users').doc(from).update({ lastBusinessType: userSelection });
+        await sendBusinessDemoFlow(from, userSelection);
+      }
+      else if (userSelection === 'buy_now') {
+        await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
+        await sendBuyEncouragement(from);
+        await sendFinalCTA(from);
+      }
+      else if (userSelection === 'confirm_buy') {
+        await sendPurchaseOptions(from);
+      }
+      else if (userSelection === 'more_demo') {
+        const userRef = await db.collection('users').doc(from).get();
+        const lastBiz = userRef.data()?.lastBusinessType || 'biz_online_store';
+        await sendExtendedDemo(from, lastBiz);
+      }
+      else {
+        const aiReply = await getAIResponse(lastMessageText, from);
         await sendMessage(from, aiReply);
       }
     } else if (interactive.type === 'button_reply') {
@@ -125,8 +131,6 @@ app.post('/webhook', async (req, res) => {
 
       if (replyId === 'to_agent') {
         await sendMessage(from, 'Connecting you to a human agent. Please wait...');
-
-        // 🔍 Get the least busy or first available agent
         const agentSnapshot = await db.collection('agents')
           .where('active', '==', true)
           .orderBy('assignedCount')
@@ -142,7 +146,6 @@ app.post('/webhook', async (req, res) => {
         const agentId = agentDoc.id;
         const agentData = agentDoc.data();
 
-        // 🤝 Assign user to this agent
         await db.collection('users').doc(from).set({
           assignedAgent: agentId,
           agentName: agentData.name,
@@ -150,17 +153,19 @@ app.post('/webhook', async (req, res) => {
           assignedAt: Date.now()
         }, { merge: true });
 
-        // Update agent's assigned count
         await db.collection('agents').doc(agentId).update({
           assignedCount: admin.firestore.FieldValue.increment(1)
         });
 
-        // 📨 Notify the agent
         await sendEmailAlert(agentData.email || ALERT_EMAIL, `New user assigned: ${profileName || from}`);
-        await sendMessage(from, `✅ You've been connected to ${agentData.name}. They’ll respond shortly.`);
-      } else if (replyId === 'to_bot') {
+        await sendMessage(from, `✅ You've been connected to ${agentData.name}. They'll respond shortly.`);
+      } 
+      else if (replyId === 'to_bot') {
         await sendMessage(from, 'Welcome back to Fred\'s Inc! Explore Performance Messaging:');
         await sendMainMenu(from);
+      }
+      else if (replyId === 'ai_guide') {
+        await sendAISuggestions(from);
       }
     }
   }
@@ -181,7 +186,7 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// ✅ Messaging Utils
+// ================== MESSAGE UTILITIES ================== //
 async function sendMessage(to, body) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -219,7 +224,7 @@ async function replyMessage(to, body, messageId) {
   }
 }
 
-// ================== NEW ONBOARDING FLOW MENUS ================== //
+// ================== DEMO FLOW MENUS ================== //
 async function sendMainMenu(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -235,17 +240,17 @@ async function sendMainMenu(to) {
           button: 'Explore',
           sections: [
             {
-              title: 'Core Benefits',
+              title: 'Core Features',
               rows: [
                 { id: 'benefits', title: '🚀 Why WhatsApp?' },
-                { id: 'proof', title: '📊 Case Studies' }
+                { id: 'demo', title: '🎯 Try Demo' }
               ]
             },
             {
               title: 'Get Started',
               rows: [
-                { id: 'demo', title: '🎯 Try Demo' },
-                { id: 'pricing', title: '💳 Pricing' }
+                { id: 'pricing', title: '💳 Pricing' },
+                { id: 'support', title: '🛟 Support' }
               ]
             }
           ]
@@ -262,7 +267,7 @@ async function sendMainMenu(to) {
   }
 }
 
-async function sendBenefitsList(to) {
+async function sendBusinessTypeList(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
@@ -270,67 +275,28 @@ async function sendBenefitsList(to) {
       type: 'interactive',
       interactive: {
         type: 'list',
-        header: { type: 'text', text: '📈 Why Fred\'s Inc?' },
-        body: { text: 'Performance Messaging with Meta\'s official partner:' },
-        footer: { text: 'Data from 40K+ brands' },
-        action: {
-          button: 'See Benefits',
-          sections: [
-            {
-              title: 'Performance Metrics',
-              rows: [
-                { id: 'proof_roas', title: '3.6x Higher ROAS' },
-                { id: 'proof_aov', title: '85% Higher AOV' },
-                { id: 'proof_cpl', title: '80% Lower CPL' }
-              ]
-            },
-            {
-              title: 'Technical Edge',
-              rows: [
-                { id: 'tech_meta', title: 'Meta API Integration' },
-                { id: 'tech_scale', title: '175M Daily Users' }
-              ]
-            }
-          ]
-        }
-      }
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
-  } catch (err) {
-    console.error('❌ Benefits list error:', err.response?.data || err.message);
-  }
-}
-
-async function sendUseCasesList(to) {
-  try {
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'list',
-        header: { type: 'text', text: '🎯 Fred\'s Inc Use Cases' },
-        body: { text: 'Proven workflows for 40K+ brands:' },
+        header: { type: 'text', text: '🏢 Select Your Business' },
+        body: { text: 'Experience tailored solutions for:' },
         footer: { text: 'Official Meta Partner' },
         action: {
-          button: 'Select',
+          button: 'Choose',
           sections: [
             {
-              title: 'E-Commerce',
+              title: 'Retail & Hospitality',
               rows: [
-                { id: 'case_cart', title: '🛒 Cart Recovery' },
-                { id: 'case_upsell', title: '⬆️ Product Upselling' }
+                { id: 'biz_online_store', title: '🛍️ Online Store' },
+                { id: 'biz_offline_store', title: '🏬 Physical Store' },
+                { id: 'biz_restaurant', title: '🍽️ Restaurant' },
+                { id: 'biz_hotel', title: '🏨 Hotel' }
               ]
             },
             {
-              title: 'Lead Gen',
+              title: 'Services & More',
               rows: [
-                { id: 'case_appointment', title: '📅 Appointment Booking' },
-                { id: 'case_lead', title: '📝 High-Intent Leads' }
+                { id: 'biz_broker', title: '📈 Stock Broker' },
+                { id: 'biz_logistics', title: '🚚 Logistics' },
+                { id: 'biz_cyber', title: '💻 Cyber Cafe' },
+                { id: 'biz_influencer', title: '🌟 Influencer' }
               ]
             }
           ]
@@ -343,48 +309,123 @@ async function sendUseCasesList(to) {
       }
     });
   } catch (err) {
-    console.error('❌ Use cases error:', err.response?.data || err.message);
+    console.error('❌ Business list error:', err.response?.data || err.message);
   }
 }
 
-async function sendDemoFlow(to, demoType) {
-  try {
-    let demoData;
-    switch(demoType) {
-      case 'demo_sales':
-        demoData = {
-          header: '🛍️ Sales Demo',
-          body: 'Simulating a 3.6x ROAS sales campaign...',
-          steps: ['1. Meta Ad Click → WhatsApp', '2. Automated Product Quiz', '3. Checkout via WhatsApp Pay']
-        };
-        break;
-      case 'demo_leads':
-        demoData = {
-          header: '📩 Lead Gen Demo',
-          body: 'Simulating 80% lower CPL flow...',
-          steps: ['1. Instagram Lead Ad → WhatsApp', '2. Instant Qualification Chat', '3. CRM Integration']
-        };
-        break;
-      default:
-        demoData = {
-          header: '🔮 Demo',
-          body: 'Here\'s how Fred\'s Inc works:',
-          steps: ['1. User sees Meta Ad', '2. Clicks to WhatsApp', '3. Converts in chat']
-        };
+async function sendBusinessDemoFlow(to, businessType) {
+  const bizFlows = {
+    biz_online_store: {
+      steps: [
+        "1️⃣ Customer sees your Meta ad for trendy sneakers",
+        "2️⃣ Clicks WhatsApp button → Lands in your automated flow",
+        "3️⃣ AI assistant handles sizing questions",
+        "4️⃣ WhatsApp Pay completes purchase in 2 taps",
+        "5️⃣ Post-purchase tracking via WhatsApp"
+      ],
+      keywords: ["sneakers", "discount", "track order", "return", "help"],
+      painPoints: [
+        "❌ Abandoned carts on website?",
+        "❌ High return rates from wrong sizes?",
+        "❌ Customers can't reach support?"
+      ]
+    },
+    biz_hotel: {
+      steps: [
+        "1️⃣ Guest sees Instagram story of your beachfront suites",
+        "2️⃣ Clicks 'Book Now' → Opens WhatsApp chat",
+        "3️⃣ Automated date selector checks availability",
+        "4️⃣ Secure payment link sent in chat",
+        "5️⃣ Pre-stay messages increase no-shows"
+      ],
+      keywords: ["availability", "pricing", "amenities", "cancel", "urgent"],
+      painPoints: [
+        "❌ Phone calls tying up staff?",
+        "❌ No-shows from forgotten bookings?",
+        "❌ Can't upsell amenities?"
+      ]
+    },
+    biz_restaurant: {
+      steps: [
+        "1️⃣ Hungry customer sees Facebook ad",
+        "2️⃣ Clicks 'Order Now' → WhatsApp chat opens",
+        "3️⃣ AI takes order with allergen alerts",
+        "4️⃣ Pay via WhatsApp or cash on delivery",
+        "5️⃣ Loyalty points automatically tracked"
+      ],
+      keywords: ["menu", "delivery", "reservation", "specials", "allergies"],
+      painPoints: [
+        "❌ Phone orders during rush hour?",
+        "❌ Missed upsell opportunities?",
+        "❌ No customer database?"
+      ]
+    },
+    biz_broker: {
+      steps: [
+        "1️⃣ Investor sees stock alert on Instagram",
+        "2️⃣ Clicks 'Trade Now' → WhatsApp chat opens",
+        "3️⃣ Secure verification via WhatsApp",
+        "4️⃣ Place orders directly in chat",
+        "5️⃣ Portfolio updates auto-sent daily"
+      ],
+      keywords: ["buy", "sell", "portfolio", "alert", "support"],
+      painPoints: [
+        "❌ Clients miss time-sensitive trades?",
+        "❌ Can't scale personal service?",
+        "❌ Compliance risks with SMS?"
+      ]
+    },
+    biz_logistics: {
+      steps: [
+        "1️⃣ Shipper sees ad for instant quotes",
+        "2️⃣ Clicks WhatsApp → AI requests details",
+        "3️⃣ Real-time pricing calculated",
+        "4️⃣ Booking confirmed in chat",
+        "5️⃣ Live tracking updates via WhatsApp"
+      ],
+      keywords: ["quote", "track", "deliver", "urgent", "support"],
+      painPoints: [
+        "❌ Phone calls for simple queries?",
+        "❌ Customers don't know shipment status?",
+        "❌ Driver coordination headaches?"
+      ]
+    },
+    biz_cyber: {
+      steps: [
+        "1️⃣ Gamer sees promo for hourly rates",
+        "2️⃣ Clicks 'Book PC' → WhatsApp chat opens",
+        "3️⃣ Checks PC availability in real-time",
+        "4️⃣ Receives digital access pass",
+        "5️⃣ Auto-extend session via WhatsApp"
+      ],
+      keywords: ["availability", "rates", "specs", "food", "help"],
+      painPoints: [
+        "❌ Empty seats during off-peak?",
+        "❌ Cash handling issues?",
+        "❌ No customer retention?"
+      ]
     }
+  };
 
+  const flow = bizFlows[businessType] || bizFlows.biz_online_store;
+
+  try {
+    await sendMessage(to, `💡 ${flow.painPoints[Math.floor(Math.random() * flow.painPoints.length)]}`);
+    
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
       type: 'interactive',
       interactive: {
         type: 'button',
-        header: { type: 'text', text: demoData.header },
-        body: { text: `${demoData.body}\n\n${demoData.steps.join('\n')}` },
+        header: { type: 'text', text: `🌟 ${businessType.replace('biz_', '').replace('_', ' ').toUpperCase()} FLOW` },
+        body: { 
+          text: `Here's how it works:\n\n${flow.steps.join('\n')}\n\nTry keywords: ${flow.keywords.slice(0, 3).join(', ')}` 
+        },
         action: {
           buttons: [
-            { type: 'reply', reply: { id: 'demo_next', title: 'Next Step' } },
-            { type: 'reply', reply: { id: 'to_agent', title: 'Talk to Expert' } }
+            { type: 'reply', reply: { id: 'buy_now', title: '🚀 Get Started' } },
+            { type: 'reply', reply: { id: 'more_demo', title: '🔍 See More' } }
           ]
         }
       }
@@ -399,7 +440,83 @@ async function sendDemoFlow(to, demoType) {
   }
 }
 
-async function sendPricingList(to) {
+async function sendExtendedDemo(to, businessType) {
+  const extendedDemos = {
+    biz_online_store: [
+      "🔄 RETURNS FLOW:",
+      "1. Customer messages 'return'",
+      "2. AI generates return label",
+      "3. WhatsApp notifies when refund processes",
+      "",
+      "🎯 RECOMMENDATIONS:",
+      "1. 'You might also like...' auto-sent",
+      "2. Click-to-buy in WhatsApp",
+      "3. Loyalty points tracked"
+    ],
+    biz_hotel: [
+      "🛎️ CONCIERGE FLOW:",
+      "1. Pre-stay: 'Need airport transfer?'",
+      "2. During stay: 'Order room service?'",
+      "3. Post-stay: 'Review your stay'",
+      "",
+      "📈 UPSELL FLOW:",
+      "1. 'Upgrade to ocean view for 20% off?'",
+      "2. 'Spa package available today'",
+      "3. WhatsApp-exclusive offers"
+    ]
+  };
+
+  const demo = extendedDemos[businessType] || extendedDemos.biz_online_store;
+  
+  await sendMessage(to, "🔍 Extended Demo:\n\n" + demo.join('\n'));
+  await sendFinalCTA(to);
+}
+
+async function sendBuyEncouragement(to) {
+  const stats = [
+    "📈 3.6x higher conversions than web",
+    "💬 85% faster response times",
+    "🤖 24/7 AI assistant handles 80% queries",
+    "🔒 Meta-verified security",
+    "📊 Real-time dashboard with ROAS tracking"
+  ];
+
+  for (const stat of stats) {
+    await sendMessage(to, stat);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+  }
+}
+
+async function sendFinalCTA(to) {
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { 
+          text: "Ready to transform your business with Official Meta Partner solutions?" 
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'confirm_buy', title: '🛒 Buy Now' } },
+            { type: 'reply', reply: { id: 'ai_guide', title: '🤖 AI Suggestions' } }
+          ]
+        }
+      }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error('❌ CTA error:', err.response?.data || err.message);
+  }
+}
+
+async function sendPurchaseOptions(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
@@ -407,24 +524,24 @@ async function sendPricingList(to) {
       type: 'interactive',
       interactive: {
         type: 'list',
-        header: { type: 'text', text: '💳 Fred\'s Inc Pricing' },
-        body: { text: 'Flexible plans for your growth:' },
-        footer: { text: 'Official Meta Partner Rates' },
+        header: { type: 'text', text: '💰 Purchase Options' },
+        body: { text: 'Select your package:' },
+        footer: { text: 'All prices include Meta verification' },
         action: {
-          button: 'Options',
+          button: 'Choose',
           sections: [
             {
               title: 'Starter Plans',
               rows: [
-                { id: 'price_starter', title: '🌱 Starter ($99/mo)' },
-                { id: 'price_pro', title: '🚀 Pro ($299/mo)' }
+                { id: 'plan_starter', title: '🌱 Starter ($99/mo)' },
+                { id: 'plan_pro', title: '🚀 Pro ($299/mo)' }
               ]
             },
             {
               title: 'Enterprise',
               rows: [
-                { id: 'price_enterprise', title: '🏢 Custom Solutions' },
-                { id: 'price_contact', title: '📞 Book a Call' }
+                { id: 'plan_enterprise', title: '🏢 Custom Solution' },
+                { id: 'plan_contact', title: '📞 Schedule Call' }
               ]
             }
           ]
@@ -437,34 +554,59 @@ async function sendPricingList(to) {
       }
     });
   } catch (err) {
-    console.error('❌ Pricing error:', err.response?.data || err.message);
+    console.error('❌ Purchase error:', err.response?.data || err.message);
   }
 }
 
-// ✅ AI Handler (Updated for Fred's Inc Onboarding Journey)
-async function getAIResponse(userText) {
+async function sendAISuggestions(to) {
+  const userRef = await db.collection('users').doc(to).get();
+  const lastBiz = userRef.data()?.lastBusinessType || 'general';
+  
+  const suggestions = {
+    biz_online_store: [
+      "Try: 'Show me summer collection'",
+      "Try: 'Track order #12345'",
+      "Try: 'Start return'",
+      "Try: 'Size guide for sneakers'",
+      "Tip: Use 'demo' to replay flow"
+    ],
+    biz_hotel: [
+      "Try: 'Check May 15 availability'",
+      "Try: 'Pool view upgrade cost'",
+      "Try: 'Late checkout options'",
+      "Try: 'Airport transfer info'",
+      "Tip: Use 'help' for human agent"
+    ]
+  };
+
+  const msgs = suggestions[lastBiz] || [
+    "Try: 'demo' - Experience flow",
+    "Try: 'pricing' - See plans",
+    "Try: 'support' - Get help",
+    "Keyword: 'buy' - Purchase now",
+    "Keyword: 'agent' - Human help"
+  ];
+
+  await sendMessage(to, "🤖 AI Suggestions:\n\n" + msgs.join('\n'));
+}
+
+// ✅ AI Handler
+async function getAIResponse(userText, userId) {
   try {
+    const userRef = await db.collection('users').doc(userId).get();
+    const lastBiz = userRef.data()?.lastBusinessType || 'general';
+    const profileName = userRef.data()?.profileName || 'there';
+
     const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
       model: "mistralai/mistral-7b-instruct",
       messages: [
         { 
           role: "system", 
-          content: `You're Fred's Inc (Official Meta Partner for WhatsApp), guiding users through a Performance Messaging onboarding journey. \
-                    Use this script (adapt responses under 250 chars): \
-                    \
-                    🚀 HERO'S JOURNEY FLOW: \
-                    1. AWARENESS: "WhatsApp drives 3x higher LTV than web! Ready to explore?" -> Show [Benefits List]. \
-                    2. INTEREST: "85% brands see higher AOV with us. Want case studies?" -> Show [Use Cases List]. \
-                    3. TRIAL: "Let’s simulate a campaign! Pick a goal:" -> Show [Demo List]. \
-                    4. SIGNUP: "Get your Meta-verified WhatsApp API now!" -> Show [Pricing List]. \
-                    5. SUPPORT: "Need help? Our team is here." -> Show [Support List]. \
-                    \
-                    KEY PHRASES: \
-                    - "Official Meta Partner" \
-                    - "3.6x ROAS proven" \
-                    - "55% lower costs" \
-                    - "175M users message businesses daily" \
-                    `
+          content: `You're Fred's Inc AI (Official Meta Partner). Context: ${lastBiz}. Guide users to:\
+                    1. Recognize pain points\
+                    2. Offer WhatsApp solutions\
+                    3. Suggest next steps ('demo', 'buy', etc)\
+                    Keep responses under 2 sentences. Use ${profileName}'s name if known.`
         },
         { role: "user", content: userText }
       ]
@@ -476,10 +618,10 @@ async function getAIResponse(userText) {
       timeout: 60000
     });
 
-    return res.data.choices?.[0]?.message?.content || "Let’s continue your Fred's Inc journey. Reply ‘menu’ for options.";
+    return res.data.choices?.[0]?.message?.content || "Try 'menu' for options.";
   } catch (err) {
     console.error('❌ AI error:', err.response?.data || err.message);
-    return "🚧 Fred's Inc system busy. Try ‘help’ or ‘menu’.";
+    return "🔧 System updating. Try 'demo' to continue.";
   }
 }
 
@@ -489,42 +631,14 @@ async function sendEmailAlert(from, subjectText) {
       from: `"Fred's Inc Alerts" <${EMAIL_USER}>`,
       to: ALERT_EMAIL,
       subject: `🚨 Alert: ${subjectText}`,
-      text: `User ${from} triggered this: ${subjectText}`,
+      text: `User ${from} triggered: ${subjectText}`,
     });
   } catch (error) {
     console.error('❌ Email error:', error.message);
   }
 }
 
-// ✅ Add this endpoint to allow agents to send manual replies
-app.post('/send', async (req, res) => {
-  const { to, message } = req.body;
-
-  if (!to || !message) {
-    return res.status(400).json({ error: 'Missing recipient or message' });
-  }
-
-  try {
-    await sendMessage(to, `👨‍💼 ${message}`);
-    
-    // Also log it into whatsapp_logs for the dashboard to display
-    await db.collection('whatsapp_logs').add({
-      from: to,
-      type: 'agent_reply',
-      message: { text: { body: message } },
-      sentByAgent: true,
-      agent: 'DashboardAgent',
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    res.sendStatus(200);
-  } catch (error) {
-    console.error('❌ Error in /send:', error.message);
-    res.status(500).json({ error: 'Failed to send message' });
-  }
-});
-
-// ✅ Create default agent if not exists
+// ✅ Create default agent
 (async () => {
   const agentId = 'fred-jr';
   const agentRef = db.collection('agents').doc(agentId);
@@ -538,9 +652,7 @@ app.post('/send', async (req, res) => {
       assignedCount: 0,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
-    console.log('✅ Default agent "Fred Jr" created.');
-  } else {
-    console.log('✅ Default agent "Fred Jr" already exists.');
+    console.log('✅ Default agent created');
   }
 })();
 
