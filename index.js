@@ -83,6 +83,24 @@ app.post('/webhook', async (req, res) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
+async function sendMessage(to, text) {
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: text }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error('❌ Send message error:', err.response?.data || err.message);
+  }
+}
+
   async function replyMessage(to, text, messageId) {
   await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
     messaging_product: 'whatsapp',
@@ -105,7 +123,7 @@ app.post('/webhook', async (req, res) => {
       await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
       await sendMainMenu(from);
     } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
-      await sendMessage(from, 'An agent will contact you shortly.');
+      await replyMessage(from, 'An agent will contact you shortly.');
       await sendEmailAlert(from, 'User requested help');
     } else if (text.includes('menu') || text.includes('options') || text.includes('start')) {
       await sendMainMenu(from);
