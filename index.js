@@ -194,7 +194,7 @@ async function sendContactCard(to) {
       }
 
        if (userSelection === 'benefits') {
-        await sendPlanDetails(from);
+        await sendPlanSelector(from);
       }
  
       else if (userSelection.startsWith('biz_')) {
@@ -296,6 +296,40 @@ async function sendContactCard(to) {
   }
   res.sendStatus(200);
 });
+
+async function sendPlanSelector(to) {
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: {
+          text: "Fred's WhatsApp Automation Plans\n\nChoose the package that best suits your business stage:\n\n *Starter* – For new businesses looking to automate basic responses.\n *Pro* – For growing teams needing advanced AI and analytics.\n *Enterprise* – For large operations needing full customization."
+        },
+        footer: {
+          text: "✅ All plans include setup, support & Meta verification"
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'plan_starter', title: 'Starter' } },
+            { type: 'reply', reply: { id: 'plan_pro', title: 'Pro' } },
+            { type: 'reply', reply: { id: 'plan_enterprise', title: 'Enterprise' } }
+          ]
+        }
+      }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error('❌ Plan selector error:', err.response?.data || err.message);
+  }
+}
+
 
 
 // ================== NEW INTERACTIVE FLOWS ================== //
