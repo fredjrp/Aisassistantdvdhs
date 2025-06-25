@@ -194,7 +194,7 @@ async function sendContactCard(to) {
       }
 
        if (userSelection === 'benefits') {
-        await sendPlanSelector(from);
+        await sendPlanDetails(from, 'starter');
       }
  
       else if (userSelection.startsWith('biz_')) {
@@ -240,30 +240,6 @@ async function sendContactCard(to) {
       }
     } else if (interactive.type === 'button_reply') {
       const replyId = interactive.button_reply.id;
-    }
-  if (replyId === 'plan_starter') {
-    await sendPlanDetails(from, 'starter');
-  }
-  else if (replyId === 'plan_pro') {
-    await sendPlanDetails(from, 'pro');
-  }
-  else if (replyId === 'plan_enterprise') {
-    await sendEnterpriseContactForm(from);
-  }
-  else if (replyId === 'confirm_buy') {
-    await sendPaymentMethods(from);
-  }
-  else if (replyId === 'to_agent') {
-    await sendContactCard(from);
-  }
-  else if (replyId === 'more_info') {
-    await sendPlanPDF(from); // or sendMessage(from, 'Here is your PDF...');
-  }
-  else {
-    const aiReply = await getAIResponse(lastMessageText, from);
-    await sendMessage(from, aiReply);
-  }
-}
 
       if (replyId === 'to_agent') {
         await sendMessage(from, 'Connecting you to a human agent. Please wait...');
