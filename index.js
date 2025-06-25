@@ -191,7 +191,12 @@ async function sendContactCard(to) {
       
       if (userSelection === 'demo') {
         await sendBusinessTypeList(from);
-      } 
+      }
+
+       if (userSelection === 'benefits') {
+        await sendBusinessDemoFlow(from);
+      }
+ 
       else if (userSelection.startsWith('biz_')) {
         await db.collection('users').doc(from).update({ lastBusinessType: userSelection });
         await sendBusinessDemoFlow(from, userSelection);
