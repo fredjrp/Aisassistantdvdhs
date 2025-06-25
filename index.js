@@ -345,6 +345,8 @@ async function sendPaymentMethods(to) {
   }
 }
 
+
+
 async function sendEnterpriseContactForm(to) {
   try {
     await sendMessage(to, `📋 Let's customize your enterprise solution!\n\nPlease provide:\n1. Your business name\n2. Estimated monthly message volume\n3. Any special requirements\n\nOr type 'cancel' to return.`);
@@ -357,6 +359,7 @@ async function sendEnterpriseContactForm(to) {
     console.error('❌ Enterprise form error:', err.response?.data || err.message);
   }
 }
+
 
 async function sendContactScheduler(to) {
   try {
@@ -388,6 +391,19 @@ async function sendContactScheduler(to) {
   }
 }
 
+async function sendMessage(to, message) {
+  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body: message }
+  }, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
+}
 // ================== ENHANCED AI HANDLER ================== //
 async function getAIResponse(userText, userId) {
   try {
@@ -468,6 +484,20 @@ async function getAIResponse(userText, userId) {
   }
 }
 
+async function sendMessage(to, message) {
+  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body: message }
+  }, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
+}
+
 // ================== EXISTING FUNCTIONS (UPDATED) ================== //
 async function sendMainMenu(to) {
   try {
@@ -535,6 +565,20 @@ async function sendMainMenu(to) {
   } catch (err) {
     console.error('❌ Main menu error:', err.response?.data || err.message);
   }
+}
+
+async function sendMessage(to, message) {
+  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body: message }
+  }, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
 }
 
 async function sendBusinessTypeList(to) {
@@ -623,6 +667,20 @@ async function sendBusinessTypeList(to) {
   } catch (err) {
     console.error('❌ Business list error:', err.response?.data || err.message);
   }
+}
+
+async function sendMessage(to, message) {
+  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body: message }
+  }, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
 }
 
 async function sendBusinessDemoFlow(to, businessType) {
