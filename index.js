@@ -83,19 +83,22 @@ app.post('/webhook', async (req, res) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
-  if (type === 'text') {
-    const text = lastMessageText.toLowerCase();
-    if (text === 'hi') {
-      await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
-      await sendMainMenu(from);
-    } else if (text === 'help') {
-      await sendMessage(from, 'An agent will contact you shortly.');
-      await sendEmailAlert(from, 'User requested help');
-    } else {
-      const aiReply = await getAIResponse(text, from);
-      await sendMessage(from, aiReply);
-    }
+if (type === 'text') {
+  const text = lastMessageText.toLowerCase();
+
+  if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
+    await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
+    await sendMainMenu(from);
+
+  } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
+    await sendMessage(from, 'An agent will contact you shortly.');
+    await sendEmailAlert(from, 'User requested help');
+
+  } else {
+    const aiReply = await getAIResponse(text, from);
+    await sendMessage(from, aiReply);
   }
+     }
 
   if (type === 'interactive') {
     const interactive = message.interactive;
