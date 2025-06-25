@@ -175,6 +175,16 @@ app.post('/webhook', async (req, res) => {
       else if (replyId === 'ai_guide') {
         await sendAISuggestions(from);
       }
+       else if (replyId === 'buy_now') {
+       await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
+       await sendBuyEncouragement(from);
+       await sendFinalCTA(from);
+      }
+      else if (replyId === 'more_demo') {
+       const userRef = await db.collection('users').doc(from).get();
+       const lastBiz = userRef.data()?.lastBusinessType || 'biz_online_store';
+       await sendExtendedDemo(from, lastBiz);
+     }
     }
   }
   res.sendStatus(200);
@@ -242,23 +252,39 @@ async function sendMainMenu(to) {
       interactive: {
         type: 'list',
         header: { type: 'text', text: '📋 Fred\'s Inc - Official Meta Partner' },
-        body: { text: 'Performance Messaging Solutions:' },
-        footer: { text: '3.6x avg ROAS | 55% lower costs' },
+        body: { text: 'Boost your business with our AI-powered WhatsApp solutions. Select a service below to learn more.' },
+        footer: { text: '📊 3.6x Avg ROAS • 55% Lower Ad Costs • 24/7 Support' },
         action: {
-          button: 'Explore',
+          button: 'Explore Menu',
           sections: [
             {
-              title: 'Core Features',
+              title: '🚀 Core Features',
               rows: [
-                { id: 'benefits', title: '🚀 Why WhatsApp?' },
-                { id: 'demo', title: '🎯 Try Demo' }
+                {
+                  id: 'benefits',
+                  title: 'Why WhatsApp?',
+                  description: 'Discover the advantages of WhatsApp for your business'
+                },
+                {
+                  id: 'demo',
+                  title: 'Try Demo',
+                  description: 'Experience an interactive sample journey'
+                }
               ]
             },
             {
-              title: 'Get Started',
+              title: '🛠️ Get Started',
               rows: [
-                { id: 'pricing', title: '💳 Pricing' },
-                { id: 'support', title: '🛟 Support' }
+                {
+                  id: 'pricing',
+                  title: 'Pricing Plans',
+                  description: 'Flexible packages to suit every business size'
+                },
+                {
+                  id: 'support',
+                  title: 'Talk to Support',
+                  description: 'Need help? Reach a real human agent now'
+                }
               ]
             }
           ]
