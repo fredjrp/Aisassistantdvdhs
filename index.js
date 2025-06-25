@@ -306,16 +306,13 @@ async function sendPlanSelector(to) {
       interactive: {
         type: 'button',
         body: {
-          text: "Fred's WhatsApp Automation Plans\n\nChoose the package that best suits your business stage:\n\n *Starter* – For new businesses looking to automate basic responses.\n *Pro* – For growing teams needing advanced AI and analytics.\n *Enterprise* – For large operations needing full customization."
-        },
-        footer: {
-          text: "✅ All plans include setup, support & Meta verification"
+          text: "📦 Choose your ideal WhatsApp Automation Plan:"
         },
         action: {
           buttons: [
-            { type: 'reply', reply: { id: 'plan_starter', title: 'Starter' } },
-            { type: 'reply', reply: { id: 'plan_pro', title: 'Pro' } },
-            { type: 'reply', reply: { id: 'plan_enterprise', title: 'Enterprise' } }
+            { type: 'reply', reply: { id: 'plan_starter', title: '🌱 Starter' } },
+            { type: 'reply', reply: { id: 'plan_pro', title: '🚀 Pro' } },
+            { type: 'reply', reply: { id: 'plan_enterprise', title: '🏢 Enterprise' } }
           ]
         }
       }
