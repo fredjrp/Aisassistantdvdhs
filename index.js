@@ -240,7 +240,7 @@ async function sendContactCard(to) {
       }
     } else if (interactive.type === 'button_reply') {
       const replyId = interactive.button_reply.id;
-
+    }
   if (replyId === 'plan_starter') {
     await sendPlanDetails(from, 'starter');
   }
