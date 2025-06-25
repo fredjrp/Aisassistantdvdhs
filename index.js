@@ -615,6 +615,23 @@ async function sendFinalCTA(to) {
 
 async function sendPurchaseOptions(to) {
   try {
+    // 1. Send an optional image header first
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: {
+        link: 'https://www.360dialog.com/wp-content/uploads/2024/10/meta-optimized-tabs-2x-hmp.png', // replace with your hosted image
+        caption: 'Explore verified pricing plans for your business growth 🚀'
+      }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // 2. Send the interactive list message
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
@@ -622,23 +639,41 @@ async function sendPurchaseOptions(to) {
       interactive: {
         type: 'list',
         header: { type: 'text', text: '💰 Purchase Options' },
-        body: { text: 'Select your package:' },
-        footer: { text: 'All prices include Meta verification' },
+        body: {
+          text: 'Choose a plan that fits your business. All plans include Meta verification and AI support.'
+        },
+        footer: { text: '100% setup done for you — cancel anytime.' },
         action: {
-          button: 'Choose',
+          button: 'View Plans',
           sections: [
             {
-              title: 'Starter Plans',
+              title: '🌱 Starter Plans',
               rows: [
-                { id: 'plan_starter', title: '🌱 Starter ($99/mo)' },
-                { id: 'plan_pro', title: '🚀 Pro ($299/mo)' }
+                {
+                  id: 'plan_starter',
+                  title: 'Starter – Ksh950/mo',
+                  description: 'For new businesses. Includes WhatsApp automation and 24/7 support.'
+                },
+                {
+                  id: 'plan_pro',
+                  title: 'Pro – Ksh9,999/mo',
+                  description: 'Advanced analytics, flows & AI replies. Best for scaling.'
+                }
               ]
             },
             {
-              title: 'Enterprise',
+              title: '🏢 Enterprise Plans',
               rows: [
-                { id: 'plan_enterprise', title: '🏢 Custom Solution' },
-                { id: 'plan_contact', title: '📞 Schedule Call' }
+                {
+                  id: 'plan_enterprise',
+                  title: 'Custom Solution',
+                  description: 'Tailored WhatsApp CRM setup for high-volume teams'
+                },
+                {
+                  id: 'plan_contact',
+                  title: '📞 Schedule a Call',
+                  description: 'Talk to our strategist to build your growth roadmap'
+                }
               ]
             }
           ]
@@ -650,6 +685,7 @@ async function sendPurchaseOptions(to) {
         'Content-Type': 'application/json'
       }
     });
+
   } catch (err) {
     console.error('❌ Purchase error:', err.response?.data || err.message);
   }
