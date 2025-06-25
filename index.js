@@ -83,6 +83,22 @@ app.post('/webhook', async (req, res) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
+  async function replyMessage(to, text, messageId) {
+  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    to,
+    context: { message_id: messageId },
+    type: 'text',
+    text: { body: text }
+  }, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
+}
+
+
   if (type === 'text') {
     const text = lastMessageText.toLowerCase();
     if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
@@ -205,6 +221,7 @@ app.post('/webhook', async (req, res) => {
   }
   res.sendStatus(200);
 });
+
 
 // ================== NEW INTERACTIVE FLOWS ================== //
 async function sendPlanDetails(to, planType) {
