@@ -151,6 +151,27 @@ async function sendContactCard(to) {
   }
 }
 
+async function sendDocument(to, document) {
+  const url = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to: to,
+    type: "document",
+    document: {
+      link: document.link,
+      filename: document.filename
+    }
+  };
+
+  await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json"
+    }
+  });
+}
+
+
 
   async function replyMessage(to, text, messageId) {
   await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -202,11 +223,18 @@ async function sendContactCard(to) {
         await sendBusinessDemoFlow(from, userSelection);
       }
       else if (userSelection === 'buy_now') {
-        await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
-        await sendBuyEncouragement(from);
-        await sendFinalCTA(from);
-      }
-      else if (userSelection === 'pricing') {
+  await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
+  await sendBuyEncouragement(from);
+  await sendFinalCTA(from);
+
+  // Send PDF document
+  await sendDocument(from, {
+    link: "https://github.com/fredjrp/investus/blob/fred/junior/Fred%20Official%20WhatsApp%20Automation%20Document.pdf", // Change to your actual hosted PDF link
+    filename: "Fred Official WhatsApp Automation Document.pdf"
+  });
+}
+
+       else if (userSelection === 'pricing') {
         await sendPurchaseOptions(from);
       }
       else if (userSelection === 'support') {
