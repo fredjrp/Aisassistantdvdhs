@@ -47,6 +47,12 @@ app.post('/webhook', async (req, res) => {
   const profileName = message?.profile?.name;
   const from = message?.from;
 
+ // Add this check early in the handler
+  const userDoc = await db.collection('users').doc(from).get();
+  if (userDoc.exists && userDoc.data().aiEnabled === false) {
+    return res.sendStatus(200); // Skip AI processing if agent is handling
+  }
+
   if (!message || !from) return res.sendStatus(200);
 
   const type = message.type;
