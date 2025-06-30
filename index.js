@@ -1,11 +1,21 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
+
+app.use(cors({
+  origin: 'https://fredjrp.github.io', // allow your frontend domain only
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+app.options('*', cors()); // ✅ Enable CORS preflight requests globally
+
 
 // 🌍 ENV
 const {
