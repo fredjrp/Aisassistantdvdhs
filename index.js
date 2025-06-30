@@ -1140,6 +1140,50 @@ setInterval(async () => {
   }
 })();
 
+// 🔄 Add Agent Assignment Webhook HERE (right before app.listen)
+app.post('/agent-webhook', async (req, res) => {
+  const { action, phoneNumber, agentId } = req.body;
+  
+  try {
+    const userRef = db.collection('users').doc(phoneNumber);
+    
+    if (action === 'assign') {
+      // Assign to agent and disable AI
+      await userRef.set({
+        assignedAgent: agentId,
+        status: 'assigned',
+        aiEnabled: false,
+        assignedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      
+      // Notify user
+      await sendMessage(phoneNumber, `You've been connected to agent ${agentId}. They'll respond shortly.`);
+      
+    } else if (action === 'toggle_ai') {
+      // Toggle AI status
+      const userDoc = await userRef.get();
+      const currentAIStatus = userDoc.data()?.aiEnabled ?? true;
+      
+      await userRef.update({
+        aiEnabled: !currentAIStatus,
+        status: !currentAIStatus ? 'ai' : 'assigned'
+      });
+      
+      const statusMessage = !currentAIStatus ? 
+        "AI assistant is now handling this conversation" :
+        "Agent is now handling this conversation";
+        
+      await sendMessage(phoneNumber, statusMessage);
+    }
+    
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Agent webhook error:', err);
+    res.status(500).send(err.message);
+  }
+});
+
+
 // ✅ Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
