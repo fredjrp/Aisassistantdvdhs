@@ -8,16 +8,16 @@ const nodemailer = require('nodemailer');
 const app = express();
 app.use(express.json());
 
-app.use(cors({
-  origin: 'https://fredjrp.github.io', // allow your frontend domain only
+const corsOptions = {
+  origin: 'https://fredjrp.github.io',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+  credentials: true,
+  optionsSuccessStatus: 200
+};
 
-app.options('*', cors()); // ✅ Enable CORS preflight requests globally
+app.use(cors(corsOptions));
 
-
-// 🌍 ENV
 const {
   WHATSAPP_ACCESS_TOKEN,
   WEBHOOK_VERIFY_TOKEN,
@@ -28,39 +28,33 @@ const {
   ALERT_EMAIL
 } = process.env;
 
-// 🔥 Firebase Init
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
 rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-// 📧 Email
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
 });
 
-// ✅ GET Root
 app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
 
-// ✅ Webhook Verification
 app.get('/webhook', (req, res) => {
   const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
   if (mode && token === WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
   res.sendStatus(403);
 });
 
-// ✅ Webhook Receiver
 app.post('/webhook', async (req, res) => {
   const changes = req.body.entry?.[0]?.changes?.[0];
   const message = changes?.value?.messages?.[0];
   const profileName = message?.profile?.name;
   const from = message?.from;
 
- // Add this check early in the handler
   const userDoc = await db.collection('users').doc(from).get();
   if (userDoc.exists && userDoc.data().aiEnabled === false) {
-    return res.sendStatus(200); // Skip AI processing if agent is handling
+    return res.sendStatus(200);
   }
 
   if (!message || !from) return res.sendStatus(200);
@@ -99,11 +93,99 @@ app.post('/webhook', async (req, res) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
-async function sendMessage(to, text) {
-  try {
+  async function sendMessage(to, text) {
+    try {
+      await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: text }
+      }, {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (err) {
+      console.error('❌ Send message error:', err.response?.data || err.message);
+    }
+  }
+
+  async function sendContactCard(to) {
+    try {
+      await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'contacts',
+        contacts: [
+          {
+            name: {
+              formatted_name: "Fred Junior",
+              first_name: "Fred",
+              last_name: "Junior"
+            },
+            org: {
+              company: "Fred's Computers",
+              department: "Support",
+              title: "Founder & Automation Expert"
+            },
+            phones: [
+              {
+                phone: "+254703738935",
+                type: "mobile",
+                wa_id: "254703738935"
+              }
+            ],
+            emails: [
+              {
+                email: "juniorokovagng@gmail.com",
+                type: "work"
+              }
+            ],
+            urls: [
+              {
+                url: "https://fredscomputers.co.ke",
+                type: "work"
+              }
+            ]
+          }
+        ]
+      }, {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (err) {
+      console.error("❌ Contact send error:", err.response?.data || err.message);
+    }
+  }
+
+  async function sendDocument(to, document) {
+    const url = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`;
+    const payload = {
+      messaging_product: "whatsapp",
+      to: to,
+      type: "document",
+      document: {
+        link: document.link,
+        filename: document.filename
+      }
+    };
+
+    await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+  }
+
+  async function replyMessage(to, text, messageId) {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
+      context: { message_id: messageId },
       type: 'text',
       text: { body: text }
     }, {
@@ -112,98 +194,7 @@ async function sendMessage(to, text) {
         'Content-Type': 'application/json'
       }
     });
-  } catch (err) {
-    console.error('❌ Send message error:', err.response?.data || err.message);
   }
-}
-
-async function sendContactCard(to) {
-  try {
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'contacts',
-      contacts: [
-        {
-          name: {
-            formatted_name: "Fred Junior",
-            first_name: "Fred",
-            last_name: "Junior"
-          },
-          org: {
-            company: "Fred's Computers",
-            department: "Support",
-            title: "Founder & Automation Expert"
-          },
-          phones: [
-            {
-              phone: "+254703738935",
-              type: "mobile",
-              wa_id: "254703738935"
-            }
-          ],
-          emails: [
-            {
-              email: "juniorokovagng@gmail.com",
-              type: "work"
-            }
-          ],
-          urls: [
-            {
-              url: "https://fredscomputers.co.ke",
-              type: "work"
-            }
-          ]
-        }
-      ]
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
-  } catch (err) {
-    console.error("❌ Contact send error:", err.response?.data || err.message);
-  }
-}
-
-async function sendDocument(to, document) {
-  const url = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`;
-  const payload = {
-    messaging_product: "whatsapp",
-    to: to,
-    type: "document",
-    document: {
-      link: document.link,
-      filename: document.filename
-    }
-  };
-
-  await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
-    }
-  });
-}
-
-
-
-  async function replyMessage(to, text, messageId) {
-  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-    messaging_product: 'whatsapp',
-    to,
-    context: { message_id: messageId },
-    type: 'text',
-    text: { body: text }
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  });
-}
-
 
   if (type === 'text') {
     const text = lastMessageText.toLowerCase();
@@ -230,27 +221,23 @@ async function sendDocument(to, document) {
         await sendBusinessTypeList(from);
       }
 
-       if (userSelection === 'benefits') {
+      if (userSelection === 'benefits') {
         await sendPlanDetails(from, 'starter');
       }
- 
       else if (userSelection.startsWith('biz_')) {
         await db.collection('users').doc(from).update({ lastBusinessType: userSelection });
         await sendBusinessDemoFlow(from, userSelection);
       }
       else if (userSelection === 'buy_now') {
-  await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
-  await sendBuyEncouragement(from);
-  await sendFinalCTA(from);
-
-  // Send PDF document
-  await sendDocument(from, {
-    link: "https://github.com/fredjrp/investus/blob/fred/junior/Fred%20Official%20WhatsApp%20Automation%20Document.pdf", // Change to your actual hosted PDF link
-    filename: "Fred Official WhatsApp Automation Document.pdf"
-  });
-}
-
-       else if (userSelection === 'pricing') {
+        await sendMessage(from, "🎉 Fantastic choice! Here's why Fred's Inc is perfect for you:");
+        await sendBuyEncouragement(from);
+        await sendFinalCTA(from);
+        await sendDocument(from, {
+          link: "https://github.com/fredjrp/investus/blob/fred/junior/Fred%20Official%20WhatsApp%20Automation%20Document.pdf",
+          filename: "Fred Official WhatsApp Automation Document.pdf"
+        });
+      }
+      else if (userSelection === 'pricing') {
         await sendPurchaseOptions(from);
       }
       else if (userSelection === 'support') {
@@ -371,9 +358,6 @@ async function sendPlanSelector(to) {
   }
 }
 
-
-
-// ================== NEW INTERACTIVE FLOWS ================== //
 async function sendPlanDetails(to, planType) {
   const plans = {
     starter: {
@@ -493,7 +477,6 @@ async function sendPaymentMethods(to) {
   }
 }
 
-
 async function sendEnterpriseContactForm(to) {
   try {
     await sendMessage(to, `📋 Let's customize your enterprise solution!\n\nPlease provide:\n1. Your business name\n2. Estimated monthly message volume\n3. Any special requirements\n\nOr type 'cancel' to return.`);
@@ -506,7 +489,6 @@ async function sendEnterpriseContactForm(to) {
     console.error('❌ Enterprise form error:', err.response?.data || err.message);
   }
 }
-
 
 async function sendContactScheduler(to) {
   try {
@@ -538,20 +520,6 @@ async function sendContactScheduler(to) {
   }
 }
 
-async function sendMessage(to, message) {
-  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body: message }
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  });
-}
-// ================== ENHANCED AI HANDLER ================== //
 async function getAIResponse(userText, userId) {
   try {
     const userRef = await db.collection('users').doc(userId).get();
@@ -559,7 +527,6 @@ async function getAIResponse(userText, userId) {
     const lastBiz = userData.lastBusinessType || 'general';
     const profileName = userData.profileName || 'friend';
 
-    // Check if we're in a special flow
     if (userData.awaitingEnterpriseDetails) {
       await db.collection('enterprise_requests').add({
         user: userId,
@@ -574,7 +541,6 @@ async function getAIResponse(userText, userId) {
       return `Thank you, ${profileName}! Our enterprise team will contact you within 1 business day with a custom proposal. Meanwhile, explore our features with 'demo' or ask me anything!`;
     }
 
-    // Enhanced personality prompts
     const personalityTraits = [
       "You're Fred's Inc AI (Official Meta Partner) - charming, witty, and persuasive",
       "Use emojis tastefully to enhance communication",
@@ -603,7 +569,7 @@ async function getAIResponse(userText, userId) {
         },
         { role: "user", content: userText }
       ],
-      temperature: 0.7 // Adds some creativity
+      temperature: 0.7
     }, {
       headers: {
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
@@ -614,7 +580,6 @@ async function getAIResponse(userText, userId) {
 
     let response = res.data.choices?.[0]?.message?.content || "Try 'menu' for options.";
     
-    // Add smart suggestions to responses
     if (response.length < 100 && !response.includes('menu') && !response.includes('demo')) {
       const suggestions = {
         biz_online_store: "\n\nTry 'demo' to see our eCommerce flows or 'pricing' for plans!",
@@ -631,21 +596,6 @@ async function getAIResponse(userText, userId) {
   }
 }
 
-async function sendMessage(to, message) {
-  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body: message }
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  });
-}
-
-// ================== EXISTING FUNCTIONS (UPDATED) ================== //
 async function sendMainMenu(to) {
   try {
     await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
@@ -712,20 +662,6 @@ async function sendMainMenu(to) {
   } catch (err) {
     console.error('❌ Main menu error:', err.response?.data || err.message);
   }
-}
-
-async function sendMessage(to, message) {
-  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body: message }
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  });
 }
 
 async function sendBusinessTypeList(to) {
@@ -814,20 +750,6 @@ async function sendBusinessTypeList(to) {
   } catch (err) {
     console.error('❌ Business list error:', err.response?.data || err.message);
   }
-}
-
-async function sendMessage(to, message) {
-  await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body: message }
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  });
 }
 
 async function sendBusinessDemoFlow(to, businessType) {
@@ -1122,9 +1044,6 @@ async function sendEmailAlert(from, subjectText) {
   }
 }
 
-// ... [Previous functions like sendBusinessDemoFlow, sendExtendedDemo, etc. remain exactly the same] ...
-
-// ✅ Follow-up every 1 min for inactive users
 setInterval(async () => {
   const snapshot = await db.collection('users').get();
   const now = Date.now();
@@ -1138,7 +1057,6 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// ✅ Create default agent
 (async () => {
   const agentId = 'fred-jr';
   const agentRef = db.collection('agents').doc(agentId);
@@ -1156,7 +1074,6 @@ setInterval(async () => {
   }
 })();
 
-// 🔄 Add Agent Assignment Webhook HERE (right before app.listen)
 app.post('/agent-webhook', async (req, res) => {
   const { action, phoneNumber, agentId } = req.body;
   
@@ -1164,7 +1081,6 @@ app.post('/agent-webhook', async (req, res) => {
     const userRef = db.collection('users').doc(phoneNumber);
     
     if (action === 'assign') {
-      // Assign to agent and disable AI
       await userRef.set({
         assignedAgent: agentId,
         status: 'assigned',
@@ -1172,11 +1088,9 @@ app.post('/agent-webhook', async (req, res) => {
         assignedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
       
-      // Notify user
       await sendMessage(phoneNumber, `You've been connected to agent ${agentId}. They'll respond shortly.`);
       
     } else if (action === 'toggle_ai') {
-      // Toggle AI status
       const userDoc = await userRef.get();
       const currentAIStatus = userDoc.data()?.aiEnabled ?? true;
       
@@ -1199,8 +1113,6 @@ app.post('/agent-webhook', async (req, res) => {
   }
 });
 
-
-// ✅ Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
