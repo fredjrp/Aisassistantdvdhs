@@ -47,32 +47,11 @@ app.post('/webhook', async (req, res) => {
   const profileName = message?.profile?.name;
   const from = message?.from;
 
- // Ensure 'from' is valid
-if (!from || typeof from !== 'string' || from.trim() === '') {
-  console.error('❌ Missing or invalid "from" value');
-  return res.sendStatus(400);
-}
-
-const userRef = db.collection('users').doc(from);
-const userDoc = await userRef.get();
-
-if (!userDoc.exists) {
-  // Create the document with default values if missing
-  await userRef.set({
-    aiEnabled: true,       // default AI setting
-    assignedAgent: null,   // optional placeholder
-    createdAt: new Date()
-  });
-  console.log(`✅ Created new user doc for ${from}`);
-}
-
-// Fetch fresh data after ensuring the doc exists
-const userData = (await userRef.get()).data();
-
-// Skip AI if explicitly disabled
-if (userData.aiEnabled === false) {
-  return res.sendStatus(200);
-}
+ // Add this check early in the handler
+  const userDoc = await db.collection('users').doc(from).get();
+  if (userDoc.exists && userDoc.data().aiEnabled === false) {
+    return res.sendStatus(200); // Skip AI processing if agent is handling
+  }
 
   if (!message || !from) return res.sendStatus(200);
 
