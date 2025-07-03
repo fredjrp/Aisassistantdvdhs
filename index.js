@@ -82,6 +82,7 @@ app.post('/webhook', async (req, res) => {
   }
   if (profileName !== undefined) {
     updateData.profileName = profileName;
+    updateData.photoURL = `https://ui-avatars.com/api/?name=${encodeURIComponent(profileName)}&background=random`;
   }
 
   await db.collection('users').doc(from).set(updateData, { merge: true });
@@ -90,6 +91,7 @@ app.post('/webhook', async (req, res) => {
     from,
     type,
     message,
+    profileName,
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 
