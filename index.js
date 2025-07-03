@@ -1114,36 +1114,71 @@ app.post('/agent-webhook', async (req, res) => {
 });
 
 app.post('/send-message', async (req, res) => {
-  const { to, type, text } = req.body;
+  const { to, type, text, image, location, interactive } = req.body;
 
-  if (!to || !text) return res.status(400).json({ error: 'Missing "to" or "text"' });
+  if (!to || !type) {
+    return res.status(400).json({ error: 'Missing "to" or "type"' });
+  }
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type
+  };
+
+  if (type === 'text') {
+    if (!text) return res.status(400).json({ error: 'Missing "text" for text message' });
+    payload.text = { body: text };
+  } else if (type === 'image') {
+    if (!image?.link) return res.status(400).json({ error: 'Missing "image.link"' });
+    payload.image = {
+      link: image.link,
+      caption: image.caption || ''
+    };
+  } else if (type === 'location') {
+    if (!location?.latitude || !location?.longitude) {
+      return res.status(400).json({ error: 'Missing location "latitude" and "longitude"' });
+    }
+    payload.location = {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      name: location.name || '',
+      address: location.address || ''
+    };
+  } else if (type === 'interactive') {
+    if (!interactive?.type) {
+      return res.status(400).json({ error: 'Missing interactive type' });
+    }
+    payload.interactive = interactive;
+  } else {
+    return res.status(400).json({ error: `Unsupported message type: ${type}` });
+  }
 
   try {
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: type || 'text',
-      text: { body: text }
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
+    const response = await axios.post(
+      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
       }
-    });
+    );
 
-    // Optional: save outgoing message to Firestore logs
+    // Optional: Save to logs
     await db.collection('whatsapp_logs').add({
       to,
       type,
-      message: { text: { body: text } },
+      message: payload,
       direction: 'outgoing',
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    res.json({ success: true, message: 'Message sent' });
+    res.status(200).json({ success: true, messageId: response.data.messages?.[0]?.id });
   } catch (err) {
-    console.error('❌ Send-message API error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to send message' });
+    console.error('❌ Error sending message:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to send message', details: err.response?.data || err.message });
   }
 });
 
