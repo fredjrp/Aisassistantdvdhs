@@ -196,21 +196,40 @@ app.post('/webhook', async (req, res) => {
     });
   }
 
-  if (type === 'text') {
-    const text = lastMessageText.toLowerCase();
-    if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
-      await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
-      await sendMainMenu(from);
-    } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
-      await replyMessage(from, 'An agent will contact you shortly.');
-      await sendEmailAlert(from, 'User requested help');
-    } else if (text.includes('menu') || text.includes('options') || text.includes('start')) {
-      await sendMainMenu(from);
-    } else {
-      const aiReply = await getAIResponse(text, from);
-      await sendMessage(from, aiReply);
-    }
+if (type === 'text') {
+  const originalMessage = lastMessageText || '';
+  const text = originalMessage.toLowerCase();
+
+  if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
+    await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
+    await sendMainMenu(from);
+  } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
+    await replyMessage(from, 'An agent will contact you shortly.');
+    await sendEmailAlert(from, 'User requested help');
+  } else if (text.includes('menu') || text.includes('options') || text.includes('start')) {
+    await sendMainMenu(from);
+  } else {
+    const aiReply = await getAIResponse(text, from);
+
+    // Send the AI reply to the user
+    await sendMessage(from, aiReply);
+
+    // ✅ Log the AI response to Firestore
+    await db.collection('whatsapp_logs').add({
+      from,
+      to: from,
+      type: 'text',
+      message: {
+        text: { body: aiReply }
+      },
+      direction: 'outgoing',
+      ai: true,
+      originalMessage, // use original casing
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
   }
+}
+
 
   if (type === 'interactive') {
     const interactive = message.interactive;
