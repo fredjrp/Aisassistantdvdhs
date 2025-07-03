@@ -1113,6 +1113,41 @@ app.post('/agent-webhook', async (req, res) => {
   }
 });
 
+app.post('/send-message', async (req, res) => {
+  const { to, type, text } = req.body;
+
+  if (!to || !text) return res.status(400).json({ error: 'Missing "to" or "text"' });
+
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: type || 'text',
+      text: { body: text }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Optional: save outgoing message to Firestore logs
+    await db.collection('whatsapp_logs').add({
+      to,
+      type,
+      message: { text: { body: text } },
+      direction: 'outgoing',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true, message: 'Message sent' });
+  } catch (err) {
+    console.error('❌ Send-message API error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
