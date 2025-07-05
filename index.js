@@ -52,10 +52,22 @@ app.post('/webhook', async (req, res) => {
   const profileName = message?.profile?.name;
   const from = message?.from;
 
-  const userDoc = await db.collection('users').doc(from).get();
-  if (userDoc.exists && userDoc.data().aiEnabled === false) {
+const userRef = db.collection('users').doc(from);
+const userDoc = await userRef.get();
+
+if (!userDoc.exists) {
+  // If user doc doesn't exist, create it with aiEnabled = true
+  await userRef.set({ aiEnabled: true }, { merge: true });
+} else {
+  const data = userDoc.data();
+  if (typeof data.aiEnabled === 'undefined') {
+    // If aiEnabled field is missing, set it to true
+    await userRef.update({ aiEnabled: true });
+  } else if (data.aiEnabled === false) {
+    // If ai is disabled, exit
     return res.sendStatus(200);
   }
+}
 
   if (!message || !from) return res.sendStatus(200);
 
