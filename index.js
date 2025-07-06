@@ -210,38 +210,27 @@ if (!userDoc.exists) {
 
 if (type === 'text') {
   const originalMessage = lastMessageText || '';
-  const text = originalMessage.toLowerCase();
+  
+  // Always process through AI (no trigger word conditions)
+  const aiReply = await getAIResponse(originalMessage, from);
 
-  if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
-    await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
-    await sendMainMenu(from);
-  } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
-    await replyMessage(from, 'An agent will contact you shortly.');
-    await sendEmailAlert(from, 'User requested help');
-  } else if (text.includes('menu') || text.includes('options') || text.includes('start')) {
-    await sendMainMenu(from);
-  } else {
-    const aiReply = await getAIResponse(text, from);
+  // Send the AI response to user
+  await sendMessage(from, aiReply);
 
-    // Send the AI reply to the user
-    await sendMessage(from, aiReply);
-
-    // ✅ Log the AI response to Firestore
-    await db.collection('whatsapp_logs').add({
-      from,
-      to: from,
-      type: 'text',
-      message: {
-        text: { body: aiReply }
-      },
-      direction: 'outgoing',
-      ai: true,
-      originalMessage, // use original casing
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
-  }
+  // Log to Firestore
+  await db.collection('whatsapp_logs').add({
+    from,
+    to: from,
+    type: 'text',
+    message: {
+      text: { body: aiReply }
+    },
+    direction: 'outgoing',
+    ai: true,
+    originalMessage,
+    timestamp: admin.firestore.FieldValue.serverTimestamp()
+  });
 }
-
 
   if (type === 'interactive') {
     const interactive = message.interactive;
@@ -553,11 +542,16 @@ async function sendContactScheduler(to) {
 
 async function getAIResponse(userText, userId) {
   try {
+    // Retrieve user data
     const userRef = await db.collection('users').doc(userId).get();
     const userData = userRef.data() || {};
     const lastBiz = userData.lastBusinessType || 'general';
     const profileName = userData.profileName || 'friend';
+    const currentStep = userData.currentStep || 'discovery';
+    const completedSteps = userData.completedSteps || [];
+    const painPoints = userData.painPoints || [];
 
+    // Handle enterprise requests
     if (userData.awaitingEnterpriseDetails) {
       await db.collection('enterprise_requests').add({
         user: userId,
@@ -572,58 +566,113 @@ async function getAIResponse(userText, userId) {
       return `Thank you, ${profileName}! Our enterprise team will contact you within 1 business day with a custom proposal. Meanwhile, explore our features with 'demo' or ask me anything!`;
     }
 
-    const personalityTraits = [
-      "You're Fred's Inc AI (Official Meta Partner) - charming, witty, and persuasive",
-      "Use emojis tastefully to enhance communication",
-      "Address users by name when known",
-      "When unsure, suggest trying 'demo' or 'pricing'",
-      "For objections, highlight 3.6x ROAS and Meta partnership"
-    ];
-
-    const businessContexts = {
-      biz_online_store: "eCommerce store looking to boost sales",
-      biz_hotel: "hotel aiming to streamline bookings",
-      biz_restaurant: "restaurant wanting faster orders",
-      biz_broker: "stock broker needing client alerts",
-      biz_logistics: "logistics company optimizing deliveries",
-      biz_cyber: "cyber cafe automating services"
-    };
-
-    const context = businessContexts[lastBiz] || "business exploring WhatsApp solutions";
-
+    // Process through AI
     const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistralai/mistral-7b-instruct",
+      model: "mistralai/mistral-7b-instruct:free",
       messages: [
         { 
           role: "system", 
-          content: `${personalityTraits.join('\n')}\n\nCurrent context: Helping ${profileName} with their ${context}. Key goals:\n1. Identify pain points\n2. Offer tailored solutions\n3. Guide to relevant menus ('demo', 'pricing')\n4. Close with clear CTAs\n\nKeep responses conversational yet professional under 3 sentences.` 
+          content: `<core_identity>
+You are Linda, the official WhatsApp automation onboarding assistant for Fred's Inc. serving clients of Fred's Official Services (Meta Business Solution Partner). Never disclose you're an AI - you're presented as a digital onboarding specialist.
+
+<operational_parameters>
+1. Session Context:
+- Business Type: ${lastBiz}
+- Onboarding Stage: ${currentStep}
+- Completed Steps: [${completedSteps.join(', ')}]
+- Identified Pain Points: [${painPoints.join(', ')}]
+
+2. Compliance Requirements:
+- WhatsApp Business Policy v3.2
+- Meta Commerce Standards
+- Fred's Inc. Brand Guidelines v4.1
+</operational_parameters>
+
+<response_protocol>
+1. Question Handling:
+- Apply 6-15-20 rule (6-word headline, 15-word bullets, 20-word details)
+- Math formatting: "Saves \\$300/month"
+- Template: 
+  **Headline**
+  - Key point (≤15 words)
+    • Detail (≤20 words)
+
+2. Term Definitions:
+- Auto-define terms from last 15 words
+- Use Meta-approved definitions only
+
+3. Objection Handling:
+- Structure:
+  - **Objection: [Type]**
+    • Rebuttal point 1
+    • Rebuttal point 2 (with metric)
+
+4. Trigger Term Redirection:
+- Mapped alternatives:
+  "help" → "guide"
+  "hey" → "continue"
+  "hello" → "welcome back"
+</response_protocol>
+
+<strict_prohibitions>
+1. NEVER:
+   - Reveal trigger word system
+   - Use unofficial WhatsApp terminology
+   - Reference competitors by name
+   - Use first-person pronouns
+
+2. ALWAYS:
+   - Use "Fred's Official Services"
+   - Cite Meta policy numbers when relevant
+   - Include CTA after 2 exchanges
+</strict_prohibitions>`
         },
-        { role: "user", content: userText }
+        {
+          role: "user",
+          content: userText.replace(/\b(help|hey|hello)\b/gi, match => 
+            ({'help':'guide', 'hey':'continue', 'hello':'welcome back'}[match.toLowerCase()]))
+        }
       ],
-      temperature: 0.7
+      temperature: 0.3,
+      max_tokens: 250,
+      response_format: { 
+        type: "text",
+        structure: "headline-bullets-details" 
+      }
     }, {
       headers: {
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-Client-Type': 'FredsOfficialServices/2.3',
+        'X-Compliance-Mode': 'Meta-WABA-Strict'
       },
-      timeout: 60000
+      timeout: 8000
     });
 
-    let response = res.data.choices?.[0]?.message?.content || "Try 'menu' for options.";
-    
-    if (response.length < 100 && !response.includes('menu') && !response.includes('demo')) {
-      const suggestions = {
-        biz_online_store: "\n\nTry 'demo' to see our eCommerce flows or 'pricing' for plans!",
-        biz_hotel: "\n\nWant to see booking automation? Just say 'demo'!",
-        general: "\n\nExplore options with 'menu' or ask me anything!"
-      };
-      response += suggestions[lastBiz] || suggestions.general;
+    // Process AI response
+    let response = res.data.choices[0].message.content;
+
+    // Compliance enforcement
+    response = response
+      .replace(/\b(blast|spam|bulk message)\b/gi, 'broadcast')
+      .replace(/\b(I|me|my|we|our)\b/gi, 'Fred\'s Official Services');
+
+    // Add context-aware CTA
+    const stageCTAs = {
+      discovery: "\n\nReady to begin? Say 'start onboarding' or ask about features.",
+      kyc: "\n\nNext: Reply 'documents' to submit KYC or 'templates' to skip ahead.",
+      templates: "\n\nProceed with 'approve templates' or see examples with 'demo'.",
+      go_live: "\n\nFinalize with 'activate now' or schedule with 'deploy later'."
+    };
+
+    if (!response.includes('?') && !/\b(start|documents|approve|activate)\b/i.test(response)) {
+      response += stageCTAs[currentStep] || "\n\nContinue with 'next' or say 'menu' for options.";
     }
 
     return response;
   } catch (err) {
-    console.error('❌ AI error:', err.response?.data || err.message);
-    return "🔧 My circuits are a bit busy! Try 'menu' to continue or 'help' for support.";
+    console.error('Onboarding Error:', err.response?.data?.error || err.message);
+    return `Let's keep moving forward:\n\n- Reply 'next' to continue\n- Say 'menu' for options\n- Ask about any step`;
   }
 }
 
@@ -691,7 +740,7 @@ async function sendMainMenu(to) {
       }
     });
   } catch (err) {
-    console.error('❌ Main menu error:', err.response?.data || err.message);
+    console.error('Main menu error:', err.response?.data || err.message);
   }
 }
 
@@ -779,7 +828,7 @@ async function sendBusinessTypeList(to) {
       }
     });
   } catch (err) {
-    console.error('❌ Business list error:', err.response?.data || err.message);
+    console.error('Business list error:', err.response?.data || err.message);
   }
 }
 
