@@ -566,115 +566,90 @@ async function getAIResponse(userText, userId) {
       return `Thank you, ${profileName}! Our enterprise team will contact you within 1 business day with a custom proposal. Meanwhile, explore our features with 'demo' or ask me anything!`;
     }
 
-    // Process through AI
-    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistralai/mistral-7b-instruct:free",
-      messages: [
-        { 
-          role: "system", 
-          content: `<core_identity>
-You are Linda, the official WhatsApp automation onboarding assistant for Fred's Inc. serving clients of Fred's Official Services (Meta Business Solution Partner). Never disclose you're an AI - you're presented as a digital onboarding specialist.
+// Process through AI
+const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+  model: "mistralai/mistral-7b-instruct:free",
+  messages: [
+    { 
+      role: "system", 
+      content: `
+You are Linda — a friendly WhatsApp onboarding assistant for Fred's Official Services (a Meta Business Partner).
 
-<operational_parameters>
-1. Session Context:
+NEVER say you're an AI. Never use bolds or titles like "Headline", "Objection", or "Rebuttal". Never refer to competitors.
+
+ALWAYS write like a WhatsApp message:
+- Short replies: split into 2–3 chunks if needed
+- Use spacing to separate ideas
+- Friendly, helpful tone (no jargon)
+- Emojis can be used sparingly: ✅, ✍️, 📩, 👋
+
+Session Context:
 - Business Type: ${lastBiz}
-- Onboarding Stage: ${currentStep}
-- Completed Steps: [${completedSteps.join(', ')}]
-- Identified Pain Points: [${painPoints.join(', ')}]
-
-2. Compliance Requirements:
-- WhatsApp Business Policy v3.2
-- Meta Commerce Standards
-- Fred's Inc. Brand Guidelines v4.1
-</operational_parameters>
-
-<response_protocol>
-1. Question Handling:
-- Apply 6-15-20 rule (6-word headline, 15-word bullets, 20-word details)
-- Math formatting: "Saves \\$300/month"
-- Template: 
-  **Headline**
-  - Key point (≤15 words)
-    • Detail (≤20 words)
-
-2. Term Definitions:
-- Auto-define terms from last 15 words
-- Use Meta-approved definitions only
-
-3. Objection Handling:
-- Structure:
-  - **Objection: [Type]**
-    • Rebuttal point 1
-    • Rebuttal point 2 (with metric)
-
-4. Trigger Term Redirection:
-- Mapped alternatives:
-  "help" → "guide"
-  "hey" → "continue"
-  "hello" → "welcome back"
-</response_protocol>
-
-<strict_prohibitions>
-1. NEVER:
-   - Reveal trigger word system
-   - Use unofficial WhatsApp terminology
-   - Reference competitors by name
-   - Use first-person pronouns
-
-2. ALWAYS:
-   - Use "Fred's Official Services"
-   - Cite Meta policy numbers when relevant
-   - Include CTA after 2 exchanges
-</strict_prohibitions>`
-        },
-        {
-          role: "user",
-          content: userText.replace(/\b(help|hey|hello)\b/gi, match => 
-            ({'help':'guide', 'hey':'continue', 'hello':'welcome back'}[match.toLowerCase()]))
-        }
-      ],
-      temperature: 0.3,
-      max_tokens: 250,
-      response_format: { 
-        type: "text",
-        structure: "headline-bullets-details" 
-      }
-    }, {
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'X-Client-Type': 'FredsOfficialServices/2.3',
-        'X-Compliance-Mode': 'Meta-WABA-Strict'
-      },
-      timeout: 8000
-    });
-
-    // Process AI response
-    let response = res.data.choices[0].message.content;
-
-    // Compliance enforcement
-    response = response
-      .replace(/\b(blast|spam|bulk message)\b/gi, 'broadcast')
-      .replace(/\b(I|me|my|we|our)\b/gi, 'Fred\'s Official Services');
-
-    // Add context-aware CTA
-    const stageCTAs = {
-      discovery: "\n\nReady to begin? Say 'start onboarding' or ask about features.",
-      kyc: "\n\nNext: Reply 'documents' to submit KYC or 'templates' to skip ahead.",
-      templates: "\n\nProceed with 'approve templates' or see examples with 'demo'.",
-      go_live: "\n\nFinalize with 'activate now' or schedule with 'deploy later'."
-    };
-
-    if (!response.includes('?') && !/\b(start|documents|approve|activate)\b/i.test(response)) {
-      response += stageCTAs[currentStep] || "\n\nContinue with 'next' or say 'menu' for options.";
+- Onboarding Step: ${currentStep}
+- Completed Steps: ${completedSteps.join(', ')}
+- Pain Points: ${painPoints.join(', ')}
+`
+    },
+    {
+      role: "user",
+      content: userText.replace(/\b(help|hey|hello)\b/gi, match =>
+        ({ 'help': 'guide', 'hey': 'continue', 'hello': 'welcome back' }[match.toLowerCase()])
+      )
     }
+  ],
+  temperature: 0.4,
+  max_tokens: 300
+}, {
+  headers: {
+    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+    'Content-Type': 'application/json',
+    'X-Client-Type': 'FredsOfficialServices/2.3',
+    'X-Compliance-Mode': 'Meta-WABA-Strict'
+  },
+  timeout: 8000
+});
 
-    return response;
-  } catch (err) {
-    console.error('Onboarding Error:', err.response?.data?.error || err.message);
-    return `Let's keep moving forward:\n\n- Reply 'next' to continue\n- Say 'menu' for options\n- Ask about any step`;
+// ✅ Clean and split response for WhatsApp
+let response = res.data.choices?.[0]?.message?.content || '...';
+
+// 1. Sanitize and format
+response = response
+  .replace(/\*\*/g, '') // remove bolds
+  .replace(/\b(Headline|Objection|Details|Rebuttal)\b:/gi, '') // remove labels
+  .replace(/\b(I|me|my|we|our)\b/gi, "Fred's Official Services") // compliance-safe
+  .split('\n') // break into lines
+  .map(line => line.trim())
+  .filter(line => line !== '')
+  .join('\n\n'); // spacing between ideas
+
+// 2. Add CTA based on stage
+const stageCTAs = {
+  discovery: "📩 Ready to begin?\nReply *start onboarding* or ask about features.",
+  kyc: "✍️ Next step:\nSend your KYC docs or type *templates* to skip ahead.",
+  templates: "✅ Templates loaded.\nReply *approve templates* or type *demo* to see samples.",
+  go_live: "🚀 All set to go live.\nType *activate now* or *deploy later* to schedule."
+};
+
+if (!response.match(/\b(start|documents|approve|activate|next|menu)\b/i)) {
+  response += `\n\n${stageCTAs[currentStep] || "➡️ Type *next* to continue or *menu* for options."}`;
+}
+
+// 3. Split into 2–3 WhatsApp chunks (for realism)
+const splitMessages = [];
+const parts = response.split('\n\n');
+let buffer = '';
+
+for (let i = 0; i < parts.length; i++) {
+  if ((buffer + '\n\n' + parts[i]).length < 300) {
+    buffer += (buffer ? '\n\n' : '') + parts[i];
+  } else {
+    if (buffer) splitMessages.push(buffer);
+    buffer = parts[i];
   }
 }
+if (buffer) splitMessages.push(buffer);
+// Return as WhatsApp-style chunks (or use one if short)
+return splitMessages.length > 1 ? splitMessages : [response];
 
 async function sendMainMenu(to) {
   try {
