@@ -74,9 +74,31 @@ const aiPersonalities = {
 };
 
 // Helper Functions
-async function sendMessage(to, text) {
+// Add this helper function for logging messages
+async function logMessage(direction, messageData) {
   try {
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    const logData = {
+      ...messageData,
+      direction, // 'incoming' or 'outgoing'
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      aiGenerated: direction === 'outgoing' && messageData.ai || false
+    };
+
+    // Clean undefined fields
+    Object.keys(logData).forEach(key => {
+      if (logData[key] === undefined) {
+        delete logData[key];
+      }
+    });
+
+    await db.collection('whatsapp_logs').add(logData);
+  } catch (err) {
+    console.error('❌ Failed to log message:', err);
+  }
+}
+async function sendMessage(to, text, isAI = false) {
+  try {
+    const response = await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
       type: 'text',
@@ -87,11 +109,22 @@ async function sendMessage(to, text) {
         'Content-Type': 'application/json'
       }
     });
+
+    // Log the outgoing message
+    await logMessage('outgoing', {
+      to,
+      from: PHONE_NUMBER_ID,
+      type: 'text',
+      message: { text: { body: text } },
+      messageId: response.data.messages?.[0]?.id,
+    });
+
+    return response;
   } catch (err) {
     console.error('❌ Send message error:', err.response?.data || err.message);
+    throw err;
   }
 }
-
 async function sendOnboardingMessage(to, stage, userData = {}) {
   const templates = {
     permission: {
@@ -218,7 +251,7 @@ async function sendOnboardingMessage(to, stage, userData = {}) {
     const template = templates[stage];
     if (!template) throw new Error(`Invalid stage: ${stage}`);
     
-    await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    const response = await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
       ...template
@@ -228,6 +261,19 @@ async function sendOnboardingMessage(to, stage, userData = {}) {
         'Content-Type': 'application/json'
       }
     });
+
+        // Log interactive messages
+    if (template.type === 'interactive') {
+      await logMessage('outgoing', {
+        to,
+        from: PHONE_NUMBER_ID,
+        type: 'interactive',
+        message: template.interactive,
+        stage: stage,
+        messageId: response.data.messages?.[0]?.id
+      });
+    }
+    return response;
   } catch (err) {
     console.error(`❌ Onboarding message error (stage ${stage}):`, err.response?.data || err.message);
     throw err;
@@ -547,6 +593,14 @@ app.post('/webhook', async (req, res) => {
 
   if (!message || !from) return res.sendStatus(200);
 
+    // Log incoming message
+    await logMessage('incoming', {
+    from,
+    type: message.type,
+    message: message,
+    userId: from
+    });
+
   const userRef = db.collection('users').doc(from);
   const userDoc = await userRef.get();
   const userData = userDoc.exists ? userDoc.data() : null;
@@ -650,13 +704,22 @@ async function getAIResponse(userText, userId) {
       response += `\n\nLearn more at Fredsofficial.com`;
     }
 
+    // Log the AI response
+    await logMessage('outgoing', {
+      to: userId,
+      from: PHONE_NUMBER_ID,
+      type: 'text',
+      message: { text: { body: response } },
+      originalMessage: userText,
+      ai: true
+    });
+
     return response;
   } catch (err) {
     console.error('❌ AI error:', err.response?.data || err.message);
     return "🔧 My circuits are a bit busy! Try asking again or visit Fredsofficial.com";
   }
 }
-
 app.post('/agent-webhook', async (req, res) => {
   const { action, phoneNumber, agentId } = req.body;
   
@@ -749,10 +812,13 @@ app.post('/send-message', async (req, res) => {
       }
     );
 
-    await db.collection('whatsapp_logs').add({
+    // Enhanced logging
+    await logMessage('outgoing', {
       to,
+      from: PHONE_NUMBER_ID,
       type,
       message: payload,
+      messageId: response.data.messages?.[0]?.id,
       direction: 'outgoing',
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
