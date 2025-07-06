@@ -165,7 +165,7 @@ async function sendOnboardingMessage(to, stage, userData = {}) {
         action: {
           buttons: [
             { type: 'reply', reply: { id: 'obj_specific', title: 'Specific Goal' } },
-            { type: 'reply', reply: { id: 'obj_adventure', title: 'Explore Possibilities' } }
+            { type: 'reply', reply: { id: 'obj_adventure', title: 'Explore' } }
           ]
         }
       }
