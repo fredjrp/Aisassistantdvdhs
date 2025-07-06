@@ -565,7 +565,6 @@ async function getAIResponse(userText, userId) {
       
       return `Thank you, ${profileName}! Our enterprise team will contact you within 1 business day with a custom proposal. Meanwhile, explore our features with 'demo' or ask me anything!`;
     }
-
 // Process through AI
 const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
   model: "mistralai/mistral-7b-instruct:free",
@@ -648,8 +647,15 @@ for (let i = 0; i < parts.length; i++) {
   }
 }
 if (buffer) splitMessages.push(buffer);
+
 // Return as WhatsApp-style chunks (or use one if short)
 return splitMessages.length > 1 ? splitMessages : [response];
+
+  } catch (err) {
+    console.error('Onboarding Error:', err.response?.data?.error || err.message);
+    return `Let's keep moving forward:\n\n- Reply 'next' to continue\n- Say 'menu' for options\n- Ask about any step`;
+  }
+}
 
 async function sendMainMenu(to) {
   try {
