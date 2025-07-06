@@ -210,27 +210,38 @@ if (!userDoc.exists) {
 
 if (type === 'text') {
   const originalMessage = lastMessageText || '';
-  
-  // Always process through AI (no trigger word conditions)
-  const aiReply = await getAIResponse(originalMessage, from);
+  const text = originalMessage.toLowerCase();
 
-  // Send the AI response to user
-  await sendMessage(from, aiReply);
+  if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
+    await replyMessage(from, `Hi ${profileName || 'there'}! 🚀 Welcome to Fred's Inc, Official Meta Partner for WhatsApp. How can we help?`, messageId);
+    await sendMainMenu(from);
+  } else if (text.includes('help') || text.includes('support') || text.includes('assist')) {
+    await replyMessage(from, 'An agent will contact you shortly.');
+    await sendEmailAlert(from, 'User requested help');
+  } else if (text.includes('menu') || text.includes('options') || text.includes('start')) {
+    await sendMainMenu(from);
+  } else {
+    const aiReply = await getAIResponse(text, from);
 
-  // Log to Firestore
-  await db.collection('whatsapp_logs').add({
-    from,
-    to: from,
-    type: 'text',
-    message: {
-      text: { body: aiReply }
-    },
-    direction: 'outgoing',
-    ai: true,
-    originalMessage,
-    timestamp: admin.firestore.FieldValue.serverTimestamp()
-  });
+    // Send the AI reply to the user
+    await sendMessage(from, aiReply);
+
+    // ✅ Log the AI response to Firestore
+    await db.collection('whatsapp_logs').add({
+      from,
+      to: from,
+      type: 'text',
+      message: {
+        text: { body: aiReply }
+      },
+      direction: 'outgoing',
+      ai: true,
+      originalMessage, // use original casing
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+  }
 }
+
 
   if (type === 'interactive') {
     const interactive = message.interactive;
@@ -542,16 +553,11 @@ async function sendContactScheduler(to) {
 
 async function getAIResponse(userText, userId) {
   try {
-    // Retrieve user data
     const userRef = await db.collection('users').doc(userId).get();
     const userData = userRef.data() || {};
     const lastBiz = userData.lastBusinessType || 'general';
     const profileName = userData.profileName || 'friend';
-    const currentStep = userData.currentStep || 'discovery';
-    const completedSteps = userData.completedSteps || [];
-    const painPoints = userData.painPoints || [];
 
-    // Handle enterprise requests
     if (userData.awaitingEnterpriseDetails) {
       await db.collection('enterprise_requests').add({
         user: userId,
@@ -565,95 +571,59 @@ async function getAIResponse(userText, userId) {
       
       return `Thank you, ${profileName}! Our enterprise team will contact you within 1 business day with a custom proposal. Meanwhile, explore our features with 'demo' or ask me anything!`;
     }
-// Process through AI
-const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-  model: "mistralai/mistral-7b-instruct:free",
-  messages: [
-    { 
-      role: "system", 
-      content: `
-You are Linda — a friendly WhatsApp onboarding assistant for Fred's Official Services (a Meta Business Partner).
 
-NEVER say you're an AI. Never use bolds or titles like "Headline", "Objection", or "Rebuttal". Never refer to competitors.
+    const personalityTraits = [
+      "You're Fred's Inc AI (Official Meta Partner) - charming, witty, and persuasive",
+      "Use emojis tastefully to enhance communication",
+      "Address users by name when known",
+      "When unsure, suggest trying 'demo' or 'pricing'",
+      "For objections, highlight 3.6x ROAS and Meta partnership"
+    ];
 
-ALWAYS write like a WhatsApp message:
-- Short replies: split into 2–3 chunks if needed
-- Use spacing to separate ideas
-- Friendly, helpful tone (no jargon)
-- Emojis can be used sparingly: ✅, ✍️, 📩, 👋
+    const businessContexts = {
+      biz_online_store: "eCommerce store looking to boost sales",
+      biz_hotel: "hotel aiming to streamline bookings",
+      biz_restaurant: "restaurant wanting faster orders",
+      biz_broker: "stock broker needing client alerts",
+      biz_logistics: "logistics company optimizing deliveries",
+      biz_cyber: "cyber cafe automating services"
+    };
 
-Session Context:
-- Business Type: ${lastBiz}
-- Onboarding Step: ${currentStep}
-- Completed Steps: ${completedSteps.join(', ')}
-- Pain Points: ${painPoints.join(', ')}
-`
-    },
-    {
-      role: "user",
-      content: userText.replace(/\b(help|hey|hello)\b/gi, match =>
-        ({ 'help': 'guide', 'hey': 'continue', 'hello': 'welcome back' }[match.toLowerCase()])
-      )
+    const context = businessContexts[lastBiz] || "business exploring WhatsApp solutions";
+
+    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+      model: "mistralai/mistral-7b-instruct",
+      messages: [
+        { 
+          role: "system", 
+          content: `${personalityTraits.join('\n')}\n\nCurrent context: Helping ${profileName} with their ${context}. Key goals:\n1. Identify pain points\n2. Offer tailored solutions\n3. Guide to relevant menus ('demo', 'pricing')\n4. Close with clear CTAs\n\nKeep responses conversational yet professional under 3 sentences.` 
+        },
+        { role: "user", content: userText }
+      ],
+      temperature: 0.7
+    }, {
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 60000
+    });
+
+    let response = res.data.choices?.[0]?.message?.content || "Try 'menu' for options.";
+    
+    if (response.length < 100 && !response.includes('menu') && !response.includes('demo')) {
+      const suggestions = {
+        biz_online_store: "\n\nTry 'demo' to see our eCommerce flows or 'pricing' for plans!",
+        biz_hotel: "\n\nWant to see booking automation? Just say 'demo'!",
+        general: "\n\nExplore options with 'menu' or ask me anything!"
+      };
+      response += suggestions[lastBiz] || suggestions.general;
     }
-  ],
-  temperature: 0.4,
-  max_tokens: 300
-}, {
-  headers: {
-    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-    'Content-Type': 'application/json',
-    'X-Client-Type': 'FredsOfficialServices/2.3',
-    'X-Compliance-Mode': 'Meta-WABA-Strict'
-  },
-  timeout: 8000
-});
 
-// ✅ Clean and split response for WhatsApp
-let response = res.data.choices?.[0]?.message?.content || '...';
-
-// 1. Sanitize and format
-response = response
-  .replace(/\*\*/g, '') // remove bolds
-  .replace(/\b(Headline|Objection|Details|Rebuttal)\b:/gi, '') // remove labels
-  .replace(/\b(I|me|my|we|our)\b/gi, "Fred's Official Services") // compliance-safe
-  .split('\n') // break into lines
-  .map(line => line.trim())
-  .filter(line => line !== '')
-  .join('\n\n'); // spacing between ideas
-
-// 2. Add CTA based on stage
-const stageCTAs = {
-  discovery: "📩 Ready to begin?\nReply *start onboarding* or ask about features.",
-  kyc: "✍️ Next step:\nSend your KYC docs or type *templates* to skip ahead.",
-  templates: "✅ Templates loaded.\nReply *approve templates* or type *demo* to see samples.",
-  go_live: "🚀 All set to go live.\nType *activate now* or *deploy later* to schedule."
-};
-
-if (!response.match(/\b(start|documents|approve|activate|next|menu)\b/i)) {
-  response += `\n\n${stageCTAs[currentStep] || "➡️ Type *next* to continue or *menu* for options."}`;
-}
-
-// 3. Split into 2–3 WhatsApp chunks (for realism)
-const splitMessages = [];
-const parts = response.split('\n\n');
-let buffer = '';
-
-for (let i = 0; i < parts.length; i++) {
-  if ((buffer + '\n\n' + parts[i]).length < 300) {
-    buffer += (buffer ? '\n\n' : '') + parts[i];
-  } else {
-    if (buffer) splitMessages.push(buffer);
-    buffer = parts[i];
-  }
-}
-if (buffer) splitMessages.push(buffer);
-
-// Return as WhatsApp-style chunks (or use one if short)
-return splitMessages.length > 1 ? splitMessages : [response];
-
+    return response;
   } catch (err) {
-    console.error('Onboarding Error:', err.response?.data?.error || err.message);
-    return `Let's keep moving forward:\n\n- Reply 'next' to continue\n- Say 'menu' for options\n- Ask about any step`;
+    console.error('❌ AI error:', err.response?.data || err.message);
+    return "🔧 My circuits are a bit busy! Try 'menu' to continue or 'help' for support.";
   }
 }
 
@@ -721,7 +691,7 @@ async function sendMainMenu(to) {
       }
     });
   } catch (err) {
-    console.error('Main menu error:', err.response?.data || err.message);
+    console.error('❌ Main menu error:', err.response?.data || err.message);
   }
 }
 
@@ -809,7 +779,7 @@ async function sendBusinessTypeList(to) {
       }
     });
   } catch (err) {
-    console.error('Business list error:', err.response?.data || err.message);
+    console.error('❌ Business list error:', err.response?.data || err.message);
   }
 }
 
