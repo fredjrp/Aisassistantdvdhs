@@ -16,6 +16,7 @@
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
+    "google-spreadsheet": "^4.1.4",
     "nodemailer": "^7.0.3"
   }
 }
