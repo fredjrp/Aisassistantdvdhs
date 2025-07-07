@@ -45,6 +45,9 @@ const transporter = nodemailer.createTransport({
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
 });
 
+const MESSAGE_COOLDOWN = 5000; // 5 seconds between messages to the same user
+const lastMessageTimestamps = new Map();
+
 // AI Personalities Configuration
 const aiPersonalities = {
   onboarding: {
@@ -98,6 +101,15 @@ async function logMessage(direction, messageData) {
 }
 async function sendMessage(to, text, isAI = false) {
   try {
+    // Check cooldown
+    const now = Date.now();
+    const lastSent = lastMessageTimestamps.get(to);
+    
+    if (lastSent && (now - lastSent) < MESSAGE_COOLDOWN) {
+      console.log(`⚠️ Message to ${to} skipped due to cooldown`);
+      return null;
+    }
+
     const response = await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
       to,
@@ -110,7 +122,10 @@ async function sendMessage(to, text, isAI = false) {
       }
     });
 
-    // Log the outgoing message
+    // Update last message timestamp
+    lastMessageTimestamps.set(to, now);
+    
+    // Rest of your existing logging code...
     await logMessage('outgoing', {
       to,
       from: PHONE_NUMBER_ID,
@@ -125,6 +140,7 @@ async function sendMessage(to, text, isAI = false) {
     throw err;
   }
 }
+
 async function sendOnboardingMessage(to, stage, userData = {}) {
   const templates = {
     permission: {
@@ -551,31 +567,38 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
 
 // Inactivity Checker
 setInterval(async () => {
-  const now = new Date();
-  const inactiveThreshold = new Date(now.getTime() - 5 * 60 * 1000);
-  
-  const snapshot = await db.collection('users')
-    .where('onboarding.closed', '==', false)
-    .where('onboarding.lastActive', '<', inactiveThreshold)
-    .get();
-
-  for (const doc of snapshot.docs) {
-    const user = doc.data();
+  try {
+    const now = new Date();
+    const inactiveThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     
-    if (!user.onboarding.followupSent) {
+    const snapshot = await db.collection('users')
+      .where('onboarding.closed', '==', false)
+      .where('onboarding.lastActive', '<', inactiveThreshold)
+      .where('onboarding.followupSent', '==', false)
+      .get();
+
+    for (const doc of snapshot.docs) {
+      const user = doc.data();
+      
+      // Skip if we've already sent a followup
+      if (user.onboarding.followupSent) continue;
+      
+      // Skip if in cooldown period
+      if (lastMessageTimestamps.has(doc.id)) {
+        const lastMessageTime = lastMessageTimestamps.get(doc.id);
+        if (now - lastMessageTime < MESSAGE_COOLDOWN) continue;
+      }
+
       await sendMessage(doc.id, "⌛ We noticed you haven't responded. Would you like to continue where you left off?");
       await db.collection('users').doc(doc.id).update({
         'onboarding.followupSent': true,
-        'onboarding.timeoutAt': admin.firestore.FieldValue.serverTimestamp()
+        'onboarding.lastActive': admin.firestore.FieldValue.serverTimestamp()
       });
-    } else {
-      await db.collection('users').doc(doc.id).update({
-        'onboarding.closed': true
-      });
-      await sendMessage(doc.id, "⏰ Our conversation has been paused. Type 'restart' anytime to continue.");
     }
+  } catch (err) {
+    console.error('Inactivity checker error:', err);
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000); // Check every 5 minutes
 
 // Routes
 app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
@@ -593,18 +616,36 @@ app.post('/webhook', async (req, res) => {
 
   if (!message || !from) return res.sendStatus(200);
 
-    // Log incoming message
-    await logMessage('incoming', {
+  // Log incoming message
+  await logMessage('incoming', {
     from,
     type: message.type,
     message: message,
     userId: from
-    });
+  });
 
   const userRef = db.collection('users').doc(from);
   const userDoc = await userRef.get();
   const userData = userDoc.exists ? userDoc.data() : null;
 
+  // Handle restart command
+if (['restart', 'start'].includes(message.text?.body?.toLowerCase().trim())) {
+  await userRef.set({
+    phone: from,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    onboarding: {
+      stage: 'permission',
+      closed: false,
+      lastActive: admin.firestore.FieldValue.serverTimestamp()
+    }
+  }, { merge: true });
+  
+  await sendMessage(from, "🔄 Restarting your onboarding process...");
+  await sendOnboardingMessage(from, 'permission');
+  return res.sendStatus(200);
+}
+
+  // Rest of your existing webhook logic...
   if (userData?.onboarding?.timeoutAt?.toDate() < new Date()) {
     await sendMessage(from, "⏰ Our conversation timed out. Type 'restart' to begin again.");
     await userRef.update({ 'onboarding.closed': true });
