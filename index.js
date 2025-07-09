@@ -903,5 +903,4 @@ app.post('/send-message', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  await uploadPublicKeyToMeta(); // ✅ Upload key once on server start
 });
