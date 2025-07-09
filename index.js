@@ -176,7 +176,7 @@ async function sendOnboardingMessage(to, stage, userData = {}) {
       type: 'interactive',
       interactive: {
         type: 'button',
-        body: { text: "Welcome to Fred's Official WhatsApp Automation! 🚀\n\nMay we collect some information to serve you better?" },
+        body: { text: "Welcome to Fred's Official WhatsApp Automation!\n\nMay we collect some information to serve you better?" },
         action: {
           buttons: [
             { type: 'reply', reply: { id: 'onboard_yes', title: 'Yes, proceed' } },
@@ -274,18 +274,18 @@ async function sendOnboardingMessage(to, stage, userData = {}) {
         type: 'button',
         body: { 
           text: `Please review your information:\n\n` +
-                `👤 Name: ${userData.name || 'Not provided'}\n` +
-                `📞 Alt Phone: ${userData.altPhone || 'Not provided'}\n` +
-                `🚻 Gender: ${userData.gender || 'Not provided'}\n` +
-                `🏢 Business: ${userData.businessType || 'Not provided'}\n` +
-                `🎯 Objective: ${userData.objective || 'Not provided'}\n` +
-                `📢 Found us via: ${userData.discoverySource || 'Not provided'}\n\n` +
+                `Name: ${userData.name?.value || 'Not provided'}\n` +
+                `Alt Phone: ${userData.altPhone?.value || 'Not provided'}\n` +
+                `Gender: ${userData.gender?.value || 'Not provided'}\n` +
+                `Business: ${userData.businessType?.value || 'Not provided'}\n` +
+                `Objective: ${userData.objective?.value || 'Not provided'}\n` +
+                `Found us via: ${userData.discoverySource?.value || 'Not provided'}\n\n` +
                 `Is everything correct?` 
         },
         action: {
           buttons: [
-            { type: 'reply', reply: { id: 'review_yes', title: '✅ All Correct' } },
-            { type: 'reply', reply: { id: 'review_edit', title: '✏️ Edit Info' } }
+            { type: 'reply', reply: { id: 'review_yes', title: 'All Correct' } },
+            { type: 'reply', reply: { id: 'review_edit', title: 'Edit Info' } }
           ]
         }
       }
