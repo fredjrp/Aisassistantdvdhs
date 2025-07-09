@@ -80,7 +80,6 @@ const lastMessageTimestamps = new Map();
 // AI Personalities Configuration for Freds Official WhatsApp Automation
 const aiPersonalities = {
   onboarding: {
-    key: 'onboarding',
     tone: "professional yet welcoming",
     traits: [
       "Specializes in WhatsApp automation setup",
@@ -92,7 +91,6 @@ const aiPersonalities = {
     businessValue: "Converts curious users into automation clients"
   },
   automationConsultant: {
-    key: 'automationConsultant',
     tone: "knowledgeable and solution-oriented", 
     traits: [
       "Diagnoses business workflow pain points",
@@ -104,7 +102,6 @@ const aiPersonalities = {
     businessValue: "Upsells premium automation services"
   },
   technicalSetup: {
-    key: 'technicalSetup',
     tone: "precise and reassuring",
     traits: [
       "Guides through technical integration steps",
@@ -116,7 +113,6 @@ const aiPersonalities = {
     businessValue: "Reduces setup friction and support tickets"
   },
   conversionExpert: {
-    key: 'conversionExpert',
     tone: "persuasive but not pushy",
     traits: [
       "Identifies upsell opportunities naturally",
@@ -129,112 +125,71 @@ const aiPersonalities = {
   }
 };
 
-// Enhanced Helper Functions with Memory Capabilities
-async function getConversationHistory(userId, limit = 6) {
+// Helper Functions
+// Add this helper function for logging messages
+async function logMessage(direction, messageData) {
   try {
-    const snapshot = await db.collection('whatsapp_logs')
-      .where('userId', '==', userId)
-      .orderBy('timestamp', 'desc')
-      .limit(limit)
-      .get();
-    
-    return snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        role: data.direction === 'incoming' ? 'user' : 'assistant',
-        content: data.message?.text?.body || '[non-text message]',
-        timestamp: data.timestamp?.toDate()?.toISOString()
-      };
-    }).reverse();
-  } catch (err) {
-    console.error('❌ Failed to fetch conversation history:', err);
-    return [];
-  }
-}
+    const logData = {
+      ...messageData,
+      direction, // 'incoming' or 'outgoing'
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      aiGenerated: direction === 'outgoing' && messageData.ai || false
+    };
 
-// Updated determinePersonality function with fallbacks
-function determinePersonality(userData = {}) {
-  // Ensure we have valid userData
-  if (!userData || typeof userData !== 'object') {
-    return aiPersonalities.onboarding; // Default fallback
-  }
-
-  // Check onboarding status first
-  if (!userData.onboarding?.completed) {
-    return aiPersonalities.onboarding;
-  }
-
-  // Check for specific interests
-  if (userData.interestShown?.includes('technical')) {
-    return aiPersonalities.technicalSetup;
-  }
-  if (userData.interestShown?.includes('automation')) {
-    return aiPersonalities.automationConsultant;
-  }
-
-  // Final fallback to conversion expert
-  return aiPersonalities.conversionExpert;
-}
-
-// Updated getAIResponse with additional error handling
-async function getAIResponse(userText, userId) {
-  try {
-    const conversationHistory = await getConversationHistory(userId);
-    const userRef = await db.collection('users').doc(userId).get();
-    const userData = userRef.data() || {};
-    
-    // Safely determine personality with fallback
-    const personality = determinePersonality(userData) || aiPersonalities.onboarding;
-
-    const messages = [
-      { 
-        role: "system", 
-        content: buildSystemPrompt(personality, userData) 
-      },
-      ...conversationHistory,
-      { role: "user", content: userText }
-    ];
-
-    const res = await axios.post(
-      'https://openrouter.ai/api/v1/chat/completions',
-      {
-        model: "mistralai/mistral-7b-instruct",
-        messages,
-        temperature: 0.7
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 60000
+    // Clean undefined fields
+    Object.keys(logData).forEach(key => {
+      if (logData[key] === undefined) {
+        delete logData[key];
       }
-    );
+    });
 
-    let response = res.data.choices?.[0]?.message?.content 
-      || "I didn't understand that. Could you rephrase?";
-
-    if (response.length < 100 && !response.includes('website')) {
-      response += `\n\nLearn more at Fredsofficial.com`;
+    await db.collection('whatsapp_logs').add(logData);
+  } catch (err) {
+    console.error('❌ Failed to log message:', err);
+  }
+}
+async function sendMessage(to, text, isAI = false) {
+  try {
+    // Check cooldown
+    const now = Date.now();
+    const lastSent = lastMessageTimestamps.get(to);
+    
+    if (lastSent && (now - lastSent) < MESSAGE_COOLDOWN) {
+      console.log(`⚠️ Message to ${to} skipped due to cooldown`);
+      return null;
     }
 
+    const response = await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: text }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Update last message timestamp
+    lastMessageTimestamps.set(to, now);
+    
+    // Rest of your existing logging code...
     await logMessage('outgoing', {
-      to: userId,
+      to,
       from: PHONE_NUMBER_ID,
       type: 'text',
-      message: { text: { body: response } },
-      originalMessage: userText,
-      ai: true,
-      contextUsed: conversationHistory.length,
-      personalityUsed: personality.key
+      message: { text: { body: text } },
+      messageId: response.data.messages?.[0]?.id,
     });
 
     return response;
   } catch (err) {
-    console.error('❌ AI error:', err.response?.data || err.message);
-    return "🔧 I'm having trouble processing your request. Please try again later.";
+    console.error('❌ Send message error:', err.response?.data || err.message);
+    throw err;
   }
 }
+
 async function sendOnboardingMessage(to, stage, userData = {}) {
   const templates = {
     permission: {
@@ -453,7 +408,7 @@ async function sendEditOptions(to) {
       type: 'interactive',
       interactive: {
         type: 'list',
-        header: { type: 'text', text: 'Edit Information' },
+        header: { type: 'text', text: '✏️ Edit Information' },
         body: { text: 'Which information would you like to update?' },
         action: {
           button: 'Select Field',
