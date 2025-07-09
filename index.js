@@ -30,8 +30,37 @@ const {
   ALERT_EMAIL,
   GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  PUBLIC_KEY,
   GOOGLE_PRIVATE_KEY
 } = process.env;
+
+const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
+
+// ✅ Endpoint to expose public key
+app.get('/public-key', (req, res) => {
+  if (!publicKey) return res.status(404).send('No public key set');
+  res.setHeader('Content-Type', 'text/plain');
+  res.send(publicKey);
+});
+
+// ✅ Function to upload key to Meta Graph API
+async function uploadPublicKeyToMeta() {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/public_key`,
+      { public_key: publicKey },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log('✅ Public key uploaded to Meta:', response.data);
+  } catch (err) {
+    console.error('❌ Failed to upload public key:', err.response?.data || err.message);
+  }
+}
 
 // Firebase Initialization
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -874,4 +903,5 @@ app.post('/send-message', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  await uploadPublicKeyToMeta(); // ✅ Upload key once on server start
 });
