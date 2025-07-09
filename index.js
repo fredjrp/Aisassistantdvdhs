@@ -152,106 +152,45 @@ async function getConversationHistory(userId, limit = 6) {
   }
 }
 
-function determinePersonality(userData) {
-  if (!userData.onboarding?.completed) return aiPersonalities.onboarding;
-  if (userData.interestShown?.includes('technical')) return aiPersonalities.technicalSetup;
-  if (userData.interestShown?.includes('automation')) return aiPersonalities.automationConsultant;
+// Updated determinePersonality function with fallbacks
+function determinePersonality(userData = {}) {
+  // Ensure we have valid userData
+  if (!userData || typeof userData !== 'object') {
+    return aiPersonalities.onboarding; // Default fallback
+  }
+
+  // Check onboarding status first
+  if (!userData.onboarding?.completed) {
+    return aiPersonalities.onboarding;
+  }
+
+  // Check for specific interests
+  if (userData.interestShown?.includes('technical')) {
+    return aiPersonalities.technicalSetup;
+  }
+  if (userData.interestShown?.includes('automation')) {
+    return aiPersonalities.automationConsultant;
+  }
+
+  // Final fallback to conversion expert
   return aiPersonalities.conversionExpert;
 }
 
-function buildSystemPrompt(personality, userData) {
-  return `
-  You are Freds Official WhatsApp Automation Assistant.
-  Personality: ${personality.key}
-  Tone: ${personality.tone}
-  Business Value: ${personality.businessValue}
-
-  User Context:
-  - Name: ${userData.onboarding?.name?.value || 'Unknown'}
-  - Business: ${userData.onboarding?.businessType?.value || 'Unknown'}
-  - Stage: ${userData.onboarding?.stage || 'New'}
-
-  Instructions:
-  ${personality.traits.join('\n')}
-
-  Important Rules:
-  1. Maintain ${personality.tone} tone always
-  2. Reference previous messages when relevant
-  3. Never make up features we don't offer
-  4. Guide users toward ${personality.businessValue}
-  `;
-}
-
-async function logMessage(direction, messageData) {
-  try {
-    const logData = {
-      ...messageData,
-      direction,
-      userId: messageData.to || messageData.from,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      aiGenerated: direction === 'outgoing' && messageData.ai || false
-    };
-
-    Object.keys(logData).forEach(key => logData[key] === undefined && delete logData[key]);
-    await db.collection('whatsapp_logs').add(logData);
-  } catch (err) {
-    console.error('❌ Failed to log message:', err);
-  }
-}
-
-async function sendMessage(to, text, isAI = false) {
-  try {
-    const now = Date.now();
-    const lastSent = lastMessageTimestamps.get(to);
-    
-    if (lastSent && (now - lastSent) < MESSAGE_COOLDOWN) {
-      console.log(`⚠️ Message to ${to} skipped due to cooldown`);
-      return null;
-    }
-
-    const response = await axios.post(
-      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: text }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    lastMessageTimestamps.set(to, now);
-    
-    await logMessage('outgoing', {
-      to,
-      from: PHONE_NUMBER_ID,
-      type: 'text',
-      message: { text: { body: text } },
-      messageId: response.data.messages?.[0]?.id,
-      ai: isAI
-    });
-
-    return response;
-  } catch (err) {
-    console.error('❌ Send message error:', err.response?.data || err.message);
-    throw err;
-  }
-}
-
+// Updated getAIResponse with additional error handling
 async function getAIResponse(userText, userId) {
-  const conversationHistory = await getConversationHistory(userId);
-  const userRef = await db.collection('users').doc(userId).get();
-  const userData = userRef.data() || {};
-  const personality = determinePersonality(userData);
-
   try {
+    const conversationHistory = await getConversationHistory(userId);
+    const userRef = await db.collection('users').doc(userId).get();
+    const userData = userRef.data() || {};
+    
+    // Safely determine personality with fallback
+    const personality = determinePersonality(userData) || aiPersonalities.onboarding;
+
     const messages = [
-      { role: "system", content: buildSystemPrompt(personality, userData) },
+      { 
+        role: "system", 
+        content: buildSystemPrompt(personality, userData) 
+      },
       ...conversationHistory,
       { role: "user", content: userText }
     ];
@@ -293,10 +232,9 @@ async function getAIResponse(userText, userId) {
     return response;
   } catch (err) {
     console.error('❌ AI error:', err.response?.data || err.message);
-    return "🔧 My circuits are a bit busy! Try asking again or visit Fredsofficial.com";
+    return "🔧 I'm having trouble processing your request. Please try again later.";
   }
 }
-
 async function sendOnboardingMessage(to, stage, userData = {}) {
   const templates = {
     permission: {
