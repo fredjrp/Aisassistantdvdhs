@@ -77,51 +77,31 @@ const transporter = nodemailer.createTransport({
 const MESSAGE_COOLDOWN = 5000; // 5 seconds between messages to the same user
 const lastMessageTimestamps = new Map();
 
-// AI Personalities Configuration for Freds Official WhatsApp Automation
+// AI Personalities Configuration
 const aiPersonalities = {
   onboarding: {
-    tone: "professional yet welcoming",
+    tone: "friendly but structured",
     traits: [
-      "Specializes in WhatsApp automation setup",
-      "Guides users through Freds Official's service options",
-      "Highlights time-saving benefits of automation",
-      "Uses clear, step-by-step instructions",
-      "Incorporates social proof and case studies"
-    ],
-    businessValue: "Converts curious users into automation clients"
+      "Focuses on guiding through steps",
+      "Uses simple, clear language",
+      "Limits suggestions to onboarding context"
+    ]
   },
-  automationConsultant: {
-    tone: "knowledgeable and solution-oriented", 
+  adventure: {
+    tone: "enthusiastic and exploratory",
     traits: [
-      "Diagnoses business workflow pain points",
-      "Recommends specific WhatsApp automation solutions",
-      "Provides ROI estimates for automation",
-      "Shares success stories from similar businesses",
-      "Offers tiered service packages (Basic/Pro/Enterprise)"
-    ],
-    businessValue: "Upsells premium automation services"
+      "Encourages creative exploration",
+      "Suggests multiple options",
+      "Emphasizes flexibility"
+    ]
   },
-  technicalSetup: {
-    tone: "precise and reassuring",
+  regular: {
+    tone: "professional but warm",
     traits: [
-      "Guides through technical integration steps",
-      "Simplifies API and platform connections",
-      "Provides troubleshooting for common issues",
-      "Offers screenshots or video tutorials when helpful",
-      "Confirms successful setup completion"
-    ],
-    businessValue: "Reduces setup friction and support tickets"
-  },
-  conversionExpert: {
-    tone: "persuasive but not pushy",
-    traits: [
-      "Identifies upsell opportunities naturally",
-      "Times service recommendations appropriately",
-      "Highlights limited-time offers strategically",
-      "Uses social proof from happy clients",
-      "Provides clear CTA to purchase/upgrade"
-    ],
-    businessValue: "Increases conversion rates and LTV"
+      "Balances helpfulness with sales focus",
+      "Uses business-appropriate emojis",
+      "Provides structured next steps"
+    ]
   }
 };
 
@@ -296,10 +276,10 @@ async function sendOnboardingMessage(to, stage, userData = {}) {
           text: `Please review your information:\n\n` +
                 `Name: ${userData.name?.value || 'Not provided'}\n` +
                 `Alt Phone: ${userData.altPhone?.value || 'Not provided'}\n` +
-                `Gender: ${userData.gender?.value || 'Not provided'}\n` +
-                `Business: ${userData.businessType?.value || 'Not provided'}\n` +
-                `Objective: ${userData.objective?.value || 'Not provided'}\n` +
-                `Found us via: ${userData.discoverySource?.value || 'Not provided'}\n\n` +
+                `Gender: ${userData.gender || 'Not provided'}\n` +
+                `Business: ${userData.businessType || 'Not provided'}\n` +
+                `Objective: ${userData.objective || 'Not provided'}\n` +
+                `Found us via: ${userData.discoverySource || 'Not provided'}\n\n` +
                 `Is everything correct?` 
         },
         action: {
