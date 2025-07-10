@@ -378,11 +378,9 @@ async function sendRatingRequest(to) {
     body: { text: "⭐ How helpful was this demonstration?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'rating_1', title: '1' } },
-        { type: 'reply', reply: { id: 'rating_2', title: '2' } },
-        { type: 'reply', reply: { id: 'rating_3', title: '3' } },
-        { type: 'reply', reply: { id: 'rating_4', title: '4' } },
-        { type: 'reply', reply: { id: 'rating_5', title: '5' } }
+        { type: 'reply', reply: { id: 'rating_1', title: '⭐ 1' } },
+        { type: 'reply', reply: { id: 'rating_3', title: '⭐⭐⭐ 3' } },
+        { type: 'reply', reply: { id: 'rating_5', title: '⭐⭐⭐⭐⭐ 5' } }
       ]
     }
   };
@@ -572,7 +570,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
           updateData.demoRating = parseInt(text.replace('rating_', ''));
           nextStage = 'demo_booking';
           await sendDemoBookingCTA(from, userData.userType);
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Small delay
+          await new Promise(resolve => setTimeout(resolve, 1000));
           await sendFinalReview(from, {
             ...userData,
             demoRating: parseInt(text.replace('rating_', ''))
