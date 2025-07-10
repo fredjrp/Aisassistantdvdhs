@@ -194,7 +194,30 @@ async function updateGoogleSheet(userData) {
   }
 }
 
-// Onboarding Flow Stages
+async function setOnboardingTimeout(userId, hours = 24) {
+  const timeoutAt = new Date();
+  timeoutAt.setHours(timeoutAt.getHours() + hours);
+  
+  await db.collection('users').doc(userId).update({
+    'onboarding.timeoutAt': admin.firestore.Timestamp.fromDate(timeoutAt),
+    'onboarding.closed': true
+  });
+}
+
+// Onboarding Flow Functions
+async function startOnboarding(userId) {
+  await db.collection('users').doc(userId).set({
+    phone: userId,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    onboarding: {
+      stage: 'welcome',
+      closed: false,
+      lastActive: admin.firestore.FieldValue.serverTimestamp()
+    }
+  }, { merge: true });
+  await sendWelcomeMessage(userId);
+}
+
 async function sendWelcomeMessage(to) {
   const interactiveData = {
     type: 'button',
@@ -206,11 +229,10 @@ async function sendWelcomeMessage(to) {
     action: {
       buttons: [
         { type: 'reply', reply: { id: 'welcome_agree', title: 'Yes, I Agree' } },
-        { type: 'reply', reply: { id: 'welcome_later', title: 'Later' } }
+        { type: 'reply', reply: { id: 'welcome_later', title: 'Remind Me Later' } }
       ]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
@@ -225,10 +247,10 @@ async function sendUserTypeSelection(to) {
       ]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
+// SCHOOL FLOW FUNCTIONS
 async function sendSchoolNameRequest(to) {
   await sendMessage(to, "🏫 Please share your school's full name:");
 }
@@ -252,7 +274,6 @@ async function sendSchoolLevelSelection(to) {
       }]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
@@ -275,8 +296,12 @@ async function sendSchoolDemoOptions(to, userName) {
       }]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
+}
+
+// BUSINESS FLOW FUNCTIONS
+async function sendBusinessNameRequest(to) {
+  await sendMessage(to, "🏢 Please share your business name:");
 }
 
 async function sendBusinessIndustrySelection(to) {
@@ -298,7 +323,6 @@ async function sendBusinessIndustrySelection(to) {
       }]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
@@ -314,7 +338,6 @@ async function sendBusinessObjectiveSelection(to) {
       ]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
@@ -337,10 +360,10 @@ async function sendBusinessDemoOptions(to, userName, businessType) {
       }]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
+// COMMON FLOW FUNCTIONS
 async function sendDemoTestimonial(to, userType) {
   if (userType === 'School') {
     await sendMessage(to, "📣 'As a head teacher, I can now reach 300 parents instantly. It's a game-changer!' – Mr. Kamau, Greenhill Academy");
@@ -363,16 +386,15 @@ async function sendRatingRequest(to) {
       ]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
 async function sendDemoBookingCTA(to, userType) {
   const calendarLink = "https://calendly.com/fredsofficial/demo";
   if (userType === 'School') {
-    await sendMessage(to, `📅 Ready to see more? Book a free demo call: ${calendarLink}`);
+    await sendMessage(to, `📅 Book a Free Demo Call: ${calendarLink}`);
   } else {
-    await sendMessage(to, `🚀 Schedule a demo to automate your sales: ${calendarLink}`);
+    await sendMessage(to, `🚀 Schedule a Demo to Automate Your Sales: ${calendarLink}`);
   }
 }
 
@@ -395,8 +417,7 @@ async function sendFinalReview(to, userData) {
     summary += `Demo Rating: ${'⭐'.repeat(userData.demoRating)}\n`;
   }
   
-  summary += `Booked Demo: ${userData.bookedDemo ? 'Yes' : 'Not yet'}\n\n`;
-  summary += "Would you like to save and continue later or talk to a human agent?";
+  summary += `\nWould you like to save and continue later or talk to a human agent?`;
 
   const interactiveData = {
     type: 'button',
@@ -408,7 +429,6 @@ async function sendFinalReview(to, userData) {
       ]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
@@ -424,7 +444,6 @@ async function sendMenuOptions(to) {
       ]
     }
   };
-
   await sendInteractiveMessage(to, interactiveData);
 }
 
@@ -450,9 +469,13 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         break;
 
       case 'user_type':
-        if (text === 'userType_school' || text === 'userType_business') {
-          updateData.userType = text.replace('userType_', '');
-          updateData['onboarding.stage'] = 'name';
+        if (text === 'userType_school') {
+          updateData.userType = 'School';
+          nextStage = 'name';
+          await sendMessage(from, "Great! What's your full name?");
+        } else if (text === 'userType_business') {
+          updateData.userType = 'Business';
+          nextStage = 'name';
           await sendMessage(from, "Great! What's your full name?");
         } else {
           await sendUserTypeSelection(from);
@@ -464,10 +487,10 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         if (text && text.length >= 2) {
           updateData.name = text;
           if (userData.userType === 'School') {
-            updateData['onboarding.stage'] = 'school_name';
-            await sendMessage(from, "🏫 Please share your school's full name:");
+            nextStage = 'school_name';
+            await sendSchoolNameRequest(from);
           } else {
-            updateData['onboarding.stage'] = 'business_industry';
+            nextStage = 'business_industry';
             await sendBusinessIndustrySelection(from);
           }
         } else {
@@ -479,7 +502,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'school_name':
         if (text && text.length >= 2) {
           updateData.schoolName = text;
-          updateData['onboarding.stage'] = 'school_level';
+          nextStage = 'school_level';
           await sendSchoolLevelSelection(from);
         } else {
           await sendMessage(from, "❌ Please provide a valid school name");
@@ -490,7 +513,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'school_level':
         if (text && text.startsWith('schoolLevel_')) {
           updateData.schoolLevel = text.replace('schoolLevel_', '');
-          updateData['onboarding.stage'] = 'school_demo';
+          nextStage = 'school_demo';
           await sendSchoolDemoOptions(from, userData.name);
         } else {
           await sendSchoolLevelSelection(from);
@@ -501,7 +524,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'school_demo':
         if (text && text.startsWith('demo_')) {
           updateData.demoSelected = admin.firestore.FieldValue.arrayUnion(text);
-          updateData['onboarding.stage'] = 'demo_testimonial';
+          nextStage = 'demo_testimonial';
           await sendDemoTestimonial(from, 'School');
           await sendRatingRequest(from);
         } else {
@@ -513,7 +536,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'business_industry':
         if (text && text.startsWith('industry_')) {
           updateData.businessIndustry = text.replace('industry_', '');
-          updateData['onboarding.stage'] = 'business_objective';
+          nextStage = 'business_objective';
           await sendBusinessObjectiveSelection(from);
         } else {
           await sendBusinessIndustrySelection(from);
@@ -524,7 +547,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'business_objective':
         if (text && text.startsWith('objective_')) {
           updateData.objective = text.replace('objective_', '');
-          updateData['onboarding.stage'] = 'business_demo';
+          nextStage = 'business_demo';
           await sendBusinessDemoOptions(from, userData.name, userData.businessIndustry);
         } else {
           await sendBusinessObjectiveSelection(from);
@@ -535,7 +558,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'business_demo':
         if (text && text.startsWith('demo_')) {
           updateData.demoSelected = admin.firestore.FieldValue.arrayUnion(text);
-          updateData['onboarding.stage'] = 'demo_testimonial';
+          nextStage = 'demo_testimonial';
           await sendDemoTestimonial(from, 'Business');
           await sendRatingRequest(from);
         } else {
@@ -547,8 +570,9 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
       case 'demo_testimonial':
         if (text && text.startsWith('rating_')) {
           updateData.demoRating = parseInt(text.replace('rating_', ''));
-          updateData['onboarding.stage'] = 'demo_booking';
+          nextStage = 'demo_booking';
           await sendDemoBookingCTA(from, userData.userType);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Small delay
           await sendFinalReview(from, {
             ...userData,
             demoRating: parseInt(text.replace('rating_', ''))
@@ -573,39 +597,16 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         }
         break;
 
-      case 'menu':
-        if (text === 'menu_resume') {
-          if (userData.onboarding?.stage) {
-            nextStage = userData.onboarding.stage;
-            await handleOnboardingStage(from, '', nextStage, userRef, userData);
-          } else {
-            await sendWelcomeMessage(from);
-          }
-        } else if (text === 'menu_restart') {
-          nextStage = 'welcome';
-          await sendWelcomeMessage(from);
-        } else if (text === 'menu_agent') {
-          updateData.requiresAgent = true;
-          await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
-        } else {
-          await sendMenuOptions(from);
-          return;
-        }
-        break;
-
       default:
         await sendMessage(from, "Sorry, I didn't understand that. Type 'menu' to see options.");
         return;
     }
 
-    if (nextStage !== stage) {
-      updateData['onboarding.stage'] = nextStage;
-    }
-
-    if (Object.keys(updateData).length > 0) {
-      await userRef.update(updateData);
-    }
-
+    // Update user progress
+    updateData['onboarding.stage'] = nextStage;
+    updateData['onboarding.lastActive'] = admin.firestore.FieldValue.serverTimestamp();
+    
+    await userRef.update(updateData);
     await updateGoogleSheet({
       ...userData,
       ...updateData,
@@ -614,7 +615,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
 
   } catch (err) {
     console.error('Onboarding error:', err);
-    await sendMessage(from, "⚠️ We encountered an error. Please try again.");
+    await sendMessage(from, "⚠️ We encountered an error. Please try again or type 'menu' to restart.");
   }
 }
 
@@ -628,89 +629,95 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
-  const changes = req.body.entry?.[0]?.changes?.[0];
-  const message = changes?.value?.messages?.[0];
-  const from = message?.from;
+  try {
+    const changes = req.body.entry?.[0]?.changes?.[0];
+    const message = changes?.value?.messages?.[0];
+    const from = message?.from;
 
-  if (!message || !from) return res.sendStatus(200);
+    if (!message || !from) return res.sendStatus(200);
 
-  await logMessage('incoming', {
-    from,
-    type: message.type,
-    message: message,
-    userId: from
-  });
-
-  const userRef = db.collection('users').doc(from);
-  const userDoc = await userRef.get();
-  const userData = userDoc.exists ? userDoc.data() : null;
-
-  // Handle menu command
-  if (message.text?.body?.toLowerCase().trim() === 'menu') {
-    await userRef.set({
-      phone: from,
-      lastActive: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-    await sendMenuOptions(from);
-    return res.sendStatus(200);
-  }
-
-  // Handle restart command
-  if (['restart', 'start'].includes(message.text?.body?.toLowerCase().trim())) {
-    await userRef.set({
-      phone: from,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      onboarding: {
-        stage: 'welcome',
-        closed: false,
-        lastActive: admin.firestore.FieldValue.serverTimestamp()
-      }
-    }, { merge: true });
-    await sendWelcomeMessage(from);
-    return res.sendStatus(200);
-  }
-
-  if (userData?.onboarding?.timeoutAt?.toDate() < new Date()) {
-    await sendMessage(from, "⏰ Our conversation timed out. Type 'menu' to begin again.");
-    await userRef.update({ 'onboarding.closed': true });
-    return res.sendStatus(200);
-  }
-
-  if (!userDoc.exists) {
-    await userRef.set({
-      phone: from,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      onboarding: {
-        stage: 'welcome',
-        closed: false,
-        lastActive: admin.firestore.FieldValue.serverTimestamp()
-      }
+    await logMessage('incoming', {
+      from,
+      type: message.type,
+      message: message,
+      userId: from
     });
-    await sendWelcomeMessage(from);
-    return res.sendStatus(200);
-  }
 
-  await userRef.update({
-    'onboarding.lastActive': admin.firestore.FieldValue.serverTimestamp()
-  });
+    const userRef = db.collection('users').doc(from);
+    const userDoc = await userRef.get();
+    const userData = userDoc.exists ? userDoc.data() : null;
 
-  const currentStage = userData.onboarding?.stage || 'welcome';
-  const type = message.type;
-  let text = '';
-
-  if (type === 'text') {
-    text = message.text?.body || '';
-  } else if (type === 'interactive') {
-    const interactive = message.interactive;
-    if (interactive?.type === 'button_reply') {
-      text = interactive.button_reply?.id || '';
-    } else if (interactive?.type === 'list_reply') {
-      text = interactive.list_reply?.id || '';
+    // Handle menu command
+    if (message.text?.body?.toLowerCase().trim() === 'menu') {
+      if (!userDoc.exists) {
+        await startOnboarding(from);
+      } else {
+        await sendMenuOptions(from);
+      }
+      return res.sendStatus(200);
     }
-  }
 
-  await handleOnboardingStage(from, text, currentStage, userRef, userData);
-  res.sendStatus(200);
+    // Handle menu options
+    if (message.interactive?.button_reply?.id === 'menu_resume') {
+      if (userData?.onboarding?.stage) {
+        await handleOnboardingStage(from, '', userData.onboarding.stage, userRef, userData);
+      } else {
+        await sendWelcomeMessage(from);
+      }
+      return res.sendStatus(200);
+    }
+
+    if (message.interactive?.button_reply?.id === 'menu_restart') {
+      await startOnboarding(from);
+      return res.sendStatus(200);
+    }
+
+    // Handle restart command
+    if (['restart', 'start'].includes(message.text?.body?.toLowerCase().trim())) {
+      await startOnboarding(from);
+      return res.sendStatus(200);
+    }
+
+    // Check for timeout
+    if (userData?.onboarding?.timeoutAt?.toDate() < new Date()) {
+      await sendMessage(from, "⏰ Our conversation timed out. Type 'menu' to begin again.");
+      await userRef.update({ 'onboarding.closed': true });
+      return res.sendStatus(200);
+    }
+
+    // New user handling
+    if (!userDoc.exists) {
+      await startOnboarding(from);
+      return res.sendStatus(200);
+    }
+
+    // Update last active time
+    await userRef.update({
+      'onboarding.lastActive': admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Determine current stage
+    const currentStage = userData.onboarding?.stage || 'welcome';
+    let text = '';
+
+    // Extract text from message
+    if (message.type === 'text') {
+      text = message.text?.body || '';
+    } else if (message.type === 'interactive') {
+      if (message.interactive?.type === 'button_reply') {
+        text = message.interactive.button_reply?.id || '';
+      } else if (message.interactive?.type === 'list_reply') {
+        text = message.interactive.list_reply?.id || '';
+      }
+    }
+
+    // Process the message
+    await handleOnboardingStage(from, text, currentStage, userRef, userData);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.sendStatus(500);
+  }
 });
 
 // Start Server
