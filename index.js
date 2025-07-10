@@ -9,7 +9,6 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 const app = express();
 app.use(express.json());
 
-// CORS Configuration
 const corsOptions = {
   origin: 'https://fredjrp.github.io',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -19,7 +18,6 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// Environment Variables
 const {
   WHATSAPP_ACCESS_TOKEN,
   WEBHOOK_VERIFY_TOKEN,
@@ -36,29 +34,27 @@ const {
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
 
-// Public Key Endpoint
 app.get('/public-key', (req, res) => {
   if (!publicKey) return res.status(404).send('No public key set');
   res.setHeader('Content-Type', 'text/plain');
   res.send(publicKey);
 });
 
-// Firebase Initialization
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
 rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-// Nodemailer Setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
 });
 
 const MESSAGE_COOLDOWN = 5000;
+const AGENT_RESPONSE_TIMEOUT = 5000;
 const lastMessageTimestamps = new Map();
+const agentResponseTimers = new Map();
 
-// Helper Functions
 async function logMessage(direction, messageData) {
   try {
     const logData = {
@@ -204,7 +200,74 @@ async function setOnboardingTimeout(userId, hours = 24) {
   });
 }
 
-// Onboarding Flow Functions
+async function getAIResponse(userText, userId) {
+  const userRef = await db.collection('users').doc(userId).get();
+  const userData = userRef.data() || {};
+  
+  const personality = userData.userType === 'School' 
+    ? {
+        tone: "educational and supportive",
+        traits: [
+          "Focuses on school administration needs",
+          "Provides clear examples for schools",
+          "Emphasizes parent communication solutions"
+        ]
+      }
+    : {
+        tone: "business-oriented and results-driven",
+        traits: [
+          "Focuses on lead generation and sales",
+          "Provides concrete business examples",
+          "Emphasizes automation and efficiency"
+        ]
+      };
+
+  try {
+    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+      model: "mistralai/mistral-7b-instruct",
+      messages: [
+        { 
+          role: "system", 
+          content: `You are Fred's Official WhatsApp assistant. Be ${personality.tone}.\n` +
+                   `${personality.traits.join('\n')}\n\n` +
+                   `Current user context:\n` +
+                   `Name: ${userData.name || 'Unknown'}\n` +
+                   `Type: ${userData.userType || 'Unknown'}\n` +
+                   `Business/School: ${userData.businessIndustry || userData.schoolLevel || 'Unknown'}`
+        },
+        { role: "user", content: userText }
+      ],
+      temperature: 0.7
+    }, {
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 60000
+    });
+
+    let response = res.data.choices?.[0]?.message?.content || "I didn't understand that. Could you rephrase?";
+    
+    if (response.length < 100 && !response.includes('website')) {
+      response += `\n\nLearn more at Fredsofficial.com`;
+    }
+
+    await logMessage('outgoing', {
+      to: userId,
+      from: PHONE_NUMBER_ID,
+      type: 'text',
+      message: { text: { body: response } },
+      originalMessage: userText,
+      ai: true
+    });
+
+    return response;
+  } catch (err) {
+    console.error('❌ AI error:', err.response?.data || err.message);
+    return "🔧 My circuits are a bit busy! Try asking again or visit Fredsofficial.com";
+  }
+}
+
 async function startOnboarding(userId) {
   await db.collection('users').doc(userId).set({
     phone: userId,
@@ -250,7 +313,6 @@ async function sendUserTypeSelection(to) {
   await sendInteractiveMessage(to, interactiveData);
 }
 
-// SCHOOL FLOW FUNCTIONS
 async function sendSchoolNameRequest(to) {
   await sendMessage(to, "🏫 Please share your school's full name:");
 }
@@ -299,7 +361,6 @@ async function sendSchoolDemoOptions(to, userName) {
   await sendInteractiveMessage(to, interactiveData);
 }
 
-// BUSINESS FLOW FUNCTIONS
 async function sendBusinessNameRequest(to) {
   await sendMessage(to, "🏢 Please share your business name:");
 }
@@ -363,7 +424,6 @@ async function sendBusinessDemoOptions(to, userName, businessType) {
   await sendInteractiveMessage(to, interactiveData);
 }
 
-// COMMON FLOW FUNCTIONS
 async function sendDemoTestimonial(to, userType) {
   if (userType === 'School') {
     await sendMessage(to, "📣 'As a head teacher, I can now reach 300 parents instantly. It's a game-changer!' – Mr. Kamau, Greenhill Academy");
@@ -445,7 +505,6 @@ async function sendMenuOptions(to) {
   await sendInteractiveMessage(to, interactiveData);
 }
 
-// Onboarding Flow Handler
 async function handleOnboardingStage(from, text, stage, userRef, userData) {
   const updateData = {};
   let nextStage = stage;
@@ -588,7 +647,22 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
           await sendMessage(from, "🎉 Thank you for completing the onboarding! Type 'menu' anytime to access these options again.");
         } else if (text === 'final_agent') {
           updateData.requiresAgent = true;
+          updateData.agentRequestedAt = admin.firestore.FieldValue.serverTimestamp();
           await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
+          
+          // Set timeout for agent response
+          agentResponseTimers.set(from, setTimeout(async () => {
+            const currentUserData = (await db.collection('users').doc(from).get()).data();
+            if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
+              await sendMessage(from, "Our agents are currently busy. Let me help you instead!");
+              const aiResponse = await getAIResponse(text, from);
+              await sendMessage(from, aiResponse);
+              await db.collection('users').doc(from).update({
+                aiEnabled: true,
+                requiresAgent: false
+              });
+            }
+          }, AGENT_RESPONSE_TIMEOUT));
         } else {
           await sendFinalReview(from, userData);
           return;
@@ -600,7 +674,6 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         return;
     }
 
-    // Update user progress
     updateData['onboarding.stage'] = nextStage;
     updateData['onboarding.lastActive'] = admin.firestore.FieldValue.serverTimestamp();
     
@@ -617,7 +690,6 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
   }
 }
 
-// Routes
 app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
 
 app.get('/webhook', (req, res) => {
@@ -645,7 +717,6 @@ app.post('/webhook', async (req, res) => {
     const userDoc = await userRef.get();
     const userData = userDoc.exists ? userDoc.data() : null;
 
-    // Handle menu command
     if (message.text?.body?.toLowerCase().trim() === 'menu') {
       if (!userDoc.exists) {
         await startOnboarding(from);
@@ -655,7 +726,6 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Handle menu options
     if (message.interactive?.button_reply?.id === 'menu_resume') {
       if (userData?.onboarding?.stage) {
         await handleOnboardingStage(from, '', userData.onboarding.stage, userRef, userData);
@@ -670,35 +740,52 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Handle restart command
+    if (message.interactive?.button_reply?.id === 'menu_agent') {
+      await userRef.update({
+        requiresAgent: true,
+        agentRequestedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
+      
+      agentResponseTimers.set(from, setTimeout(async () => {
+        const currentUserData = (await db.collection('users').doc(from).get()).data();
+        if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
+          await sendMessage(from, "Our agents are currently busy. Let me help you instead!");
+          const aiResponse = await getAIResponse(message.text?.body || '', from);
+          await sendMessage(from, aiResponse);
+          await db.collection('users').doc(from).update({
+            aiEnabled: true,
+            requiresAgent: false
+          });
+        }
+      }, AGENT_RESPONSE_TIMEOUT));
+      
+      return res.sendStatus(200);
+    }
+
     if (['restart', 'start'].includes(message.text?.body?.toLowerCase().trim())) {
       await startOnboarding(from);
       return res.sendStatus(200);
     }
 
-    // Check for timeout
     if (userData?.onboarding?.timeoutAt?.toDate() < new Date()) {
       await sendMessage(from, "⏰ Our conversation timed out. Type 'menu' to begin again.");
       await userRef.update({ 'onboarding.closed': true });
       return res.sendStatus(200);
     }
 
-    // New user handling
     if (!userDoc.exists) {
       await startOnboarding(from);
       return res.sendStatus(200);
     }
 
-    // Update last active time
     await userRef.update({
       'onboarding.lastActive': admin.firestore.FieldValue.serverTimestamp()
     });
 
-    // Determine current stage
     const currentStage = userData.onboarding?.stage || 'welcome';
     let text = '';
 
-    // Extract text from message
     if (message.type === 'text') {
       text = message.text?.body || '';
     } else if (message.type === 'interactive') {
@@ -709,7 +796,14 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Process the message
+    if (userData.onboarding?.completed || userData.aiEnabled) {
+      if (!text.includes('agent') && !userData.requiresAgent && !userData.assignedAgent) {
+        const aiResponse = await getAIResponse(text, from);
+        await sendMessage(from, aiResponse);
+        return res.sendStatus(200);
+      }
+    }
+
     await handleOnboardingStage(from, text, currentStage, userRef, userData);
     res.sendStatus(200);
   } catch (err) {
@@ -718,7 +812,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
