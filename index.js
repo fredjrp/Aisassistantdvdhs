@@ -5,7 +5,6 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
@@ -32,28 +31,10 @@ const {
   GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
   PUBLIC_KEY,
-  GOOGLE_PRIVATE_KEY,
-  WHATSAPP_WEBHOOK_SECRET
+  GOOGLE_PRIVATE_KEY
 } = process.env;
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
-
-// Verify Webhook Signature
-function verifySignature(req) {
-  if (!WHATSAPP_WEBHOOK_SECRET) return true;
-  
-  const signature = req.headers['x-hub-signature-256'];
-  if (!signature) return false;
-
-  const hmac = crypto.createHmac('sha256', WHATSAPP_WEBHOOK_SECRET);
-  hmac.update(JSON.stringify(req.body));
-  const calculatedSignature = `sha256=${hmac.digest('hex')}`;
-
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(calculatedSignature)
-  );
-}
 
 // Firebase Initialization
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -786,11 +767,6 @@ app.get('/webhook', (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   try {
-    if (!verifySignature(req)) {
-      console.error('Invalid webhook signature');
-      return res.sendStatus(403);
-    }
-
     const changes = req.body.entry?.[0]?.changes?.[0];
     const message = changes?.value?.messages?.[0];
     const from = message?.from;
