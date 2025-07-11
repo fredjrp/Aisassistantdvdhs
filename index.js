@@ -5,10 +5,12 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
 
+// CORS Configuration
 const corsOptions = {
   origin: 'https://fredjrp.github.io',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -18,6 +20,7 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
+// Environment Variables
 const {
   WHATSAPP_ACCESS_TOKEN,
   WEBHOOK_VERIFY_TOKEN,
@@ -29,22 +32,36 @@ const {
   GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
   PUBLIC_KEY,
-  GOOGLE_PRIVATE_KEY
+  GOOGLE_PRIVATE_KEY,
+  WHATSAPP_WEBHOOK_SECRET
 } = process.env;
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
 
-app.get('/public-key', (req, res) => {
-  if (!publicKey) return res.status(404).send('No public key set');
-  res.setHeader('Content-Type', 'text/plain');
-  res.send(publicKey);
-});
+// Verify Webhook Signature
+function verifySignature(req) {
+  if (!WHATSAPP_WEBHOOK_SECRET) return true;
+  
+  const signature = req.headers['x-hub-signature-256'];
+  if (!signature) return false;
 
+  const hmac = crypto.createHmac('sha256', WHATSAPP_WEBHOOK_SECRET);
+  hmac.update(JSON.stringify(req.body));
+  const calculatedSignature = `sha256=${hmac.digest('hex')}`;
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(calculatedSignature)
+  );
+}
+
+// Firebase Initialization
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
 rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
+// Nodemailer Setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
@@ -52,9 +69,11 @@ const transporter = nodemailer.createTransport({
 
 const MESSAGE_COOLDOWN = 5000;
 const AGENT_RESPONSE_TIMEOUT = 5000;
-const lastMessageTimestamps = new Map();
+const AI_RESPONSE_MIN_LENGTH = 100;
+const AI_RESPONSE_MAX_LENGTH = 500;
 const agentResponseTimers = new Map();
 
+// Helper Functions
 async function logMessage(direction, messageData) {
   try {
     const logData = {
@@ -76,29 +95,72 @@ async function logMessage(direction, messageData) {
   }
 }
 
+async function checkCooldown(userId) {
+  try {
+    const cooldownRef = db.collection('messageCooldowns').doc(userId);
+    const doc = await cooldownRef.get();
+    
+    if (doc.exists) {
+      const lastSent = doc.data().timestamp.toDate().getTime();
+      if (Date.now() - lastSent < MESSAGE_COOLDOWN) {
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('Cooldown check error:', err);
+    return false;
+  }
+}
+
+async function updateCooldown(userId) {
+  try {
+    await db.collection('messageCooldowns').doc(userId).set({
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    console.error('Cooldown update error:', err);
+  }
+}
+
+function formatAIResponse(text) {
+  if (text.length < AI_RESPONSE_MIN_LENGTH) {
+    text += `\n\nLearn more at Fredsofficial.com`;
+  } else if (text.length > AI_RESPONSE_MAX_LENGTH) {
+    text = text.substring(0, AI_RESPONSE_MAX_LENGTH - 50) + "...\n\n[Message shortened]";
+  }
+  return text;
+}
+
 async function sendMessage(to, text, isAI = false) {
   try {
-    const now = Date.now();
-    const lastSent = lastMessageTimestamps.get(to);
-    
-    if (lastSent && (now - lastSent) < MESSAGE_COOLDOWN) {
+    if (await checkCooldown(to)) {
       console.log(`⚠️ Message to ${to} skipped due to cooldown`);
       return null;
     }
 
-    const response = await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: text }
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
+    if (isAI) {
+      text = formatAIResponse(text);
+    }
 
-    lastMessageTimestamps.set(to, now);
+    const response = await axios.post(
+      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: text }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+
+    await updateCooldown(to);
     
     await logMessage('outgoing', {
       to,
@@ -106,6 +168,7 @@ async function sendMessage(to, text, isAI = false) {
       type: 'text',
       message: { text: { body: text } },
       messageId: response.data.messages?.[0]?.id,
+      ai: isAI
     });
 
     return response;
@@ -117,18 +180,30 @@ async function sendMessage(to, text, isAI = false) {
 
 async function sendInteractiveMessage(to, interactiveData) {
   try {
-    const response = await axios.post(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: interactiveData
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
+    if (await checkCooldown(to)) {
+      console.log(`⚠️ Interactive message to ${to} skipped due to cooldown`);
+      return null;
+    }
 
+    const response = await axios.post(
+      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: interactiveData
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+
+    await updateCooldown(to);
+    
     await logMessage('outgoing', {
       to,
       from: PHONE_NUMBER_ID,
@@ -208,49 +283,53 @@ async function getAIResponse(userText, userId) {
     ? {
         tone: "educational and supportive",
         traits: [
-          "Focuses on school administration needs",
-          "Provides clear examples for schools",
-          "Emphasizes parent communication solutions"
+          "Keep responses between 100-500 characters",
+          "Focus on school administration needs",
+          "Provide clear examples for schools",
+          "Emphasize parent communication solutions"
         ]
       }
     : {
         tone: "business-oriented and results-driven",
         traits: [
-          "Focuses on lead generation and sales",
-          "Provides concrete business examples",
-          "Emphasizes automation and efficiency"
+          "Keep responses between 100-500 characters",
+          "Focus on lead generation and sales",
+          "Provide concrete business examples",
+          "Emphasize automation and efficiency"
         ]
       };
 
   try {
-    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistralai/mistral-7b-instruct",
-      messages: [
-        { 
-          role: "system", 
-          content: `You are Fred's Official WhatsApp assistant. Be ${personality.tone}.\n` +
-                   `${personality.traits.join('\n')}\n\n` +
-                   `Current user context:\n` +
-                   `Name: ${userData.name || 'Unknown'}\n` +
-                   `Type: ${userData.userType || 'Unknown'}\n` +
-                   `Business/School: ${userData.businessIndustry || userData.schoolLevel || 'Unknown'}`
-        },
-        { role: "user", content: userText }
-      ],
-      temperature: 0.7
-    }, {
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json'
+    const res = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: "mistralai/mistral-7b-instruct",
+        messages: [
+          { 
+            role: "system", 
+            content: `You are Fred's Official WhatsApp assistant. Be ${personality.tone}.\n` +
+                     `${personality.traits.join('\n')}\n\n` +
+                     `Current user context:\n` +
+                     `Name: ${userData.name || 'Unknown'}\n` +
+                     `Type: ${userData.userType || 'Unknown'}\n` +
+                     `Business/School: ${userData.businessIndustry || userData.schoolLevel || 'Unknown'}`
+          },
+          { role: "user", content: userText }
+        ],
+        temperature: 0.7,
+        max_tokens: 150
       },
-      timeout: 60000
-    });
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
 
     let response = res.data.choices?.[0]?.message?.content || "I didn't understand that. Could you rephrase?";
-    
-    if (response.length < 100 && !response.includes('website')) {
-      response += `\n\nLearn more at Fredsofficial.com`;
-    }
+    response = formatAIResponse(response);
 
     await logMessage('outgoing', {
       to: userId,
@@ -650,7 +729,6 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
           updateData.agentRequestedAt = admin.firestore.FieldValue.serverTimestamp();
           await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
           
-          // Set timeout for agent response
           agentResponseTimers.set(from, setTimeout(async () => {
             const currentUserData = (await db.collection('users').doc(from).get()).data();
             if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
@@ -692,6 +770,14 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
 
 app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
 
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
 app.get('/webhook', (req, res) => {
   const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
   if (mode && token === WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
@@ -700,11 +786,18 @@ app.get('/webhook', (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   try {
+    if (!verifySignature(req)) {
+      console.error('Invalid webhook signature');
+      return res.sendStatus(403);
+    }
+
     const changes = req.body.entry?.[0]?.changes?.[0];
     const message = changes?.value?.messages?.[0];
     const from = message?.from;
 
     if (!message || !from) return res.sendStatus(200);
+
+    console.log('Webhook received:', message.type, 'from:', from);
 
     await logMessage('incoming', {
       from,
@@ -799,7 +892,7 @@ app.post('/webhook', async (req, res) => {
     if (userData.onboarding?.completed || userData.aiEnabled) {
       if (!text.includes('agent') && !userData.requiresAgent && !userData.assignedAgent) {
         const aiResponse = await getAIResponse(text, from);
-        await sendMessage(from, aiResponse);
+        await sendMessage(from, aiResponse, true);
         return res.sendStatus(200);
       }
     }
@@ -813,6 +906,15 @@ app.post('/webhook', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`⏰ Last restart: ${new Date().toISOString()}`);
+});
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });
