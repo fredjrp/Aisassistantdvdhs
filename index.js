@@ -9,7 +9,6 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 const app = express();
 app.use(express.json());
 
-// CORS Configuration
 const corsOptions = {
   origin: 'https://fredjrp.github.io',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -19,7 +18,6 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// Environment Variables
 const {
   WHATSAPP_ACCESS_TOKEN,
   WEBHOOK_VERIFY_TOKEN,
@@ -36,13 +34,11 @@ const {
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
 
-// Firebase Initialization
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
 rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-// Nodemailer Setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
@@ -50,11 +46,9 @@ const transporter = nodemailer.createTransport({
 
 const MESSAGE_COOLDOWN = 5000;
 const AGENT_RESPONSE_TIMEOUT = 5000;
-const AI_RESPONSE_MIN_LENGTH = 100;
-const AI_RESPONSE_MAX_LENGTH = 500;
+const DEMO_DELAY = 3000;
 const agentResponseTimers = new Map();
 
-// Helper Functions
 async function logMessage(direction, messageData) {
   try {
     const logData = {
@@ -104,24 +98,11 @@ async function updateCooldown(userId) {
   }
 }
 
-function formatAIResponse(text) {
-  if (text.length < AI_RESPONSE_MIN_LENGTH) {
-    text += `\n\nLearn more at Fredsofficial.com`;
-  } else if (text.length > AI_RESPONSE_MAX_LENGTH) {
-    text = text.substring(0, AI_RESPONSE_MAX_LENGTH - 50) + "...\n\n[Message shortened]";
-  }
-  return text;
-}
-
 async function sendMessage(to, text, isAI = false) {
   try {
     if (await checkCooldown(to)) {
       console.log(`⚠️ Message to ${to} skipped due to cooldown`);
       return null;
-    }
-
-    if (isAI) {
-      text = formatAIResponse(text);
     }
 
     const response = await axios.post(
@@ -262,18 +243,18 @@ async function getAIResponse(userText, userId) {
   
   const personality = userData.userType === 'School' 
     ? {
-        tone: "educational and supportive",
+        tone: "educational and concise",
         traits: [
-          "Keep responses between 100-500 characters",
-          "Focus on school administration needs",
-          "Provide clear examples for schools",
-          "Emphasize parent communication solutions"
+          "Keep responses 100-300 characters",
+          "Use bullet points when listing items",
+          "Offer to continue via Fredsofficial.com if more detail needed",
+          "Always conclude with clear next steps"
         ]
       }
     : {
-        tone: "business-oriented and results-driven",
+        tone: "business-oriented and concise",
         traits: [
-          "Keep responses between 100-500 characters",
+          "Keep responses 100-300 characters",
           "Focus on lead generation and sales",
           "Provide concrete business examples",
           "Emphasize automation and efficiency"
@@ -310,8 +291,6 @@ async function getAIResponse(userText, userId) {
     );
 
     let response = res.data.choices?.[0]?.message?.content || "I didn't understand that. Could you rephrase?";
-    response = formatAIResponse(response);
-
     await logMessage('outgoing', {
       to: userId,
       from: PHONE_NUMBER_ID,
@@ -345,9 +324,9 @@ async function sendWelcomeMessage(to) {
   const interactiveData = {
     type: 'button',
     body: {
-      text: "👋 Hey there! Welcome to Fred's Official WhatsApp Automation Assistant 🌟\n\n" +
-            "To provide you with the best experience, we'd like to collect some information. " +
-            "Your data will only be used to personalize your experience and for demo booking purposes."
+      text: "👋 Welcome to Fred's Official WhatsApp Automation Assistant 🌟\n\n" +
+            "To provide the best experience, we'll collect some information. " +
+            "Your data will only be used to personalize your experience."
     },
     action: {
       buttons: [
@@ -400,25 +379,204 @@ async function sendSchoolLevelSelection(to) {
 }
 
 async function sendSchoolDemoOptions(to, userName) {
-  await sendMessage(to, `Thanks, ${userName}! Since you're a school admin, let's show you how we help schools like yours...`);
-
+  await sendMessage(to, "📚 Here's how we help schools like yours:");
+  
   const interactiveData = {
     type: 'list',
-    header: { type: 'text', text: '🎓 School Use Cases' },
-    body: { text: 'Select a demo to see how we can help:' },
+    header: { type: 'text', text: '🏫 School Automation Demo' },
+    body: { 
+      text: `${userName}, try these school communication tools:\n` +
+            "Tap to experience a simulation" 
+    },
     action: {
       button: 'View Demos',
       sections: [{
-        title: 'School Solutions',
+        title: 'School Tools',
         rows: [
-          { id: 'demo_exam_timetable', title: 'Send Exam Timetable', description: 'Automated parent notifications' },
-          { id: 'demo_parent_consent', title: 'Collect Parent Consent', description: 'For trips and activities' },
-          { id: 'demo_report_cards', title: 'Send Report Cards', description: 'With feedback collection' }
+          { id: 'demo_exam_alert', title: 'Exam Alert', description: 'Send to entire school' },
+          { id: 'demo_report_card', title: 'Report Cards', description: 'With parent feedback' },
+          { id: 'demo_event_reminder', title: 'Event Reminder', description: 'PTA meetings, etc' }
         ]
       }]
     }
   };
   await sendInteractiveMessage(to, interactiveData);
+}
+
+async function runExamAlertDemo(to) {
+  await sendMessage(to, "📝 Setting up exam alert simulation...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Send exam timetable to:" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'exam_all', title: 'All Parents (300)' } },
+        { type: 'reply', reply: { id: 'exam_form4', title: 'Form 4 Only (45)' } }
+      ]
+    }
+  });
+}
+
+async function completeExamAlertDemo(to, choice) {
+  if (choice === 'exam_all') {
+    await sendMessage(to, "⏳ Sending to 300 parents...");
+    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+    await sendMessage(to, 
+      "✅ Sent successfully!\n\n" +
+      "Sample message:\n" +
+      "📅 FORM 1 EXAMS\n" +
+      "Mon: Math (8-10am)\n" +
+      "Tue: English (9-11am)\n" +
+      "Full timetable: bit.ly/greenhill-exams");
+  } else {
+    await sendMessage(to, "⏳ Sending to Form 4 parents...");
+    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+    await sendMessage(to, 
+      "✅ Sent to 45 parents!\n\n" +
+      "Sample message:\n" +
+      "📅 FORM 4 PRE-MOCKS\n" +
+      "Wed: Chemistry (10am-12pm)\n" +
+      "Thu: Physics (8-10am)");
+  }
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Would you like to test sending to another number?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'exam_test_number', title: 'Test on Another Number' } },
+        { type: 'reply', reply: { id: 'exam_done', title: 'Continue' } }
+      ]
+    }
+  });
+}
+
+async function requestTestNumber(to, demoType) {
+  await sendMessage(to, `Please enter the phone number to test ${demoType} (format: 0700123456):`);
+}
+
+async function confirmTestNumber(to, number, demoType) {
+  await sendMessage(to, `⏳ Preparing to send ${demoType} demo to ${number}...`);
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  if (demoType === 'exam alert') {
+    await sendMessage(to, 
+      `📤 Sent exam alert demo to ${number}:\n\n` +
+      "Sample exam timetable attached\n" +
+      "View full demo at Fredsofficial.com/demo");
+  } else if (demoType === 'report card') {
+    await sendMessage(to,
+      `📤 Sent report card demo to ${number}:\n\n` +
+      "📝 Term 3 Report Card\n" +
+      "Math: A\nEnglish: B+\n" +
+      "View full demo at Fredsofficial.com/demo");
+  }
+}
+
+async function runReportCardDemo(to) {
+  await sendMessage(to, "📊 Generating sample report card...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendMessage(to,
+    "📝 STUDENT REPORT - TERM 3\n" +
+    "Name: Maria Kamau\n" +
+    "Class: Form 2 East\n\n" +
+    "Math: A\n" +
+    "English: B+\n" +
+    "Science: A-\n" +
+    "Comments: Excellent progress in STEM subjects");
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Include parent feedback request?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'report_yes', title: 'Yes, Add Feedback' } },
+        { type: 'reply', reply: { id: 'report_no', title: 'Send As Is' } }
+      ]
+    }
+  });
+}
+
+async function completeReportCardDemo(to, includeFeedback) {
+  if (includeFeedback === 'report_yes') {
+    await sendMessage(to, "⏳ Adding feedback section...");
+    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+    await sendMessage(to,
+      "✅ Report card ready with feedback request!\n\n" +
+      "Sample message to parents:\n" +
+      "Please reply with:\n" +
+      "1 - Satisfied\n" +
+      "2 - Needs improvement\n" +
+      "3 - Request meeting");
+  } else {
+    await sendMessage(to, "⏳ Sending report card...");
+    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+    await sendMessage(to, "✅ Report card sent to parents!");
+  }
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Test sending to another number?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'report_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'report_done', title: 'Continue' } }
+      ]
+    }
+  });
+}
+
+async function runEventReminderDemo(to) {
+  await sendMessage(to, "📅 Setting up event reminder...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendInteractiveMessage(to, {
+    type: 'list',
+    header: { type: 'text', text: '🏫 School Event Reminder' },
+    body: { text: 'Select event type:' },
+    action: {
+      button: 'Select',
+      sections: [{
+        title: 'Event Types',
+        rows: [
+          { id: 'event_pta', title: 'PTA Meeting' },
+          { id: 'event_sports', title: 'Sports Day' },
+          { id: 'event_trip', title: 'School Trip' }
+        ]
+      }]
+    }
+  });
+}
+
+async function completeEventReminderDemo(to, eventType) {
+  let eventName = '';
+  if (eventType === 'event_pta') eventName = 'PTA Meeting';
+  else if (eventType === 'event_sports') eventName = 'Sports Day';
+  else eventName = 'School Trip';
+  
+  await sendMessage(to, `⏳ Creating ${eventName} reminder...`);
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendMessage(to,
+    `✅ ${eventName} Reminder Ready!\n\n` +
+    "Sample message:\n" +
+    `📢 ${eventName} Alert\n` +
+    `Date: ${new Date(Date.now() + 86400000 * 7).toLocaleDateString()}\n` +
+    "Details: bit.ly/greenhill-events");
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Test sending to another number?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'event_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'event_done', title: 'Continue' } }
+      ]
+    }
+  });
 }
 
 async function sendBusinessNameRequest(to) {
@@ -463,20 +621,24 @@ async function sendBusinessObjectiveSelection(to) {
 }
 
 async function sendBusinessDemoOptions(to, userName, businessType) {
-  await sendMessage(to, `Awesome, ${userName}! Based on your ${businessType} business, let me show you how Fred's Official helps you close more leads faster.`);
-
+  await sendMessage(to, "🛍️ Here's our product catalog:");
+  await sendMessage(to, "Image: [Mock product catalog image]");
+  
   const interactiveData = {
     type: 'list',
     header: { type: 'text', text: '🧲 Business Solutions' },
-    body: { text: 'Select a demo to see how we can help:' },
+    body: { 
+      text: `${userName}, try these ${businessType} business tools:\n` +
+            "Tap to experience a simulation" 
+    },
     action: {
       button: 'View Demos',
       sections: [{
-        title: 'Business Solutions',
+        title: 'Business Tools',
         rows: [
-          { id: 'demo_ad_leads', title: 'Capture WhatsApp Ad Leads', description: 'Automate lead collection' },
-          { id: 'demo_autoresponder', title: 'Autoresponder Follow-Up', description: 'Instant responses 24/7' },
-          { id: 'demo_crm_tagging', title: 'CRM Tagging + Broadcast', description: 'Organize and message clients' }
+          { id: 'demo_ad_leads', title: 'Ad Lead Capture', description: 'From social media ads' },
+          { id: 'demo_autoresponder', title: 'Autoresponder', description: 'Instant replies 24/7' },
+          { id: 'demo_crm_tagging', title: 'CRM Tagging', description: 'Organize clients' }
         ]
       }]
     }
@@ -484,11 +646,157 @@ async function sendBusinessDemoOptions(to, userName, businessType) {
   await sendInteractiveMessage(to, interactiveData);
 }
 
+async function runAdLeadDemo(to) {
+  await sendMessage(to, "🔍 Simulating ad lead capture...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { 
+      text: "A customer clicked your Facebook ad:\n" +
+            "'Learn About Premium Plan'" 
+    },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'lead_capture', title: 'Capture Lead' } }
+      ]
+    }
+  });
+}
+
+async function completeAdLeadDemo(to) {
+  await sendMessage(to, "⏳ Creating lead in CRM...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendMessage(to,
+    "✅ Lead Captured!\n" +
+    "Name: John Doe\n" +
+    "Interest: Premium Plan\n" +
+    "Phone: +2547******");
+  
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  await sendMessage(to,
+    "🤖 Auto-responder sequence started:\n\n" +
+    "1. Instant reply sent:\n" +
+    "'Thanks for your interest John! Here's our Premium Plan brochure: link.com'\n\n" +
+    "2. Follow-up in 24h:\n" +
+    "'Did you get a chance to review the Premium Plan details?'");
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Test sending to another number?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'lead_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'lead_done', title: 'Continue' } }
+      ]
+    }
+  });
+}
+
+async function runAutoresponderDemo(to) {
+  await sendMessage(to, "🤖 Setting up auto-responder...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendInteractiveMessage(to, {
+    type: 'list',
+    header: { type: 'text', text: '⏰ Auto-responder Triggers' },
+    body: { text: 'Select when to respond automatically:' },
+    action: {
+      button: 'Select',
+      sections: [{
+        title: 'Triggers',
+        rows: [
+          { id: 'auto_keyword', title: 'Keyword Detection' },
+          { id: 'auto_hours', title: 'After Hours' },
+          { id: 'auto_all', title: 'All Messages' }
+        ]
+      }]
+    }
+  });
+}
+
+async function completeAutoresponderDemo(to, triggerType) {
+  let triggerName = '';
+  if (triggerType === 'auto_keyword') triggerName = 'keyword detection';
+  else if (triggerType === 'auto_hours') triggerName = 'after hours';
+  else triggerName = 'all messages';
+  
+  await sendMessage(to, `⏳ Configuring ${triggerName} responder...`);
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendMessage(to,
+    `✅ ${triggerName.charAt(0).toUpperCase() + triggerName.slice(1)} responder active!\n\n` +
+    "Sample triggered response:\n" +
+    "Thanks for your message! Our team will respond within 24 hours. " +
+    "For urgent inquiries, call 0700123456.");
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Test sending to another number?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'auto_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'auto_done', title: 'Continue' } }
+      ]
+    }
+  });
+}
+
+async function runCRMTaggingDemo(to) {
+  await sendMessage(to, "🏷️ Simulating CRM tagging...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendInteractiveMessage(to, {
+    type: 'list',
+    header: { type: 'text', text: '📌 Tag This Lead' },
+    body: { text: 'New lead from website contact form:' },
+    action: {
+      button: 'Select Tags',
+      sections: [{
+        title: 'Tags',
+        rows: [
+          { id: 'tag_hot', title: '🔥 Hot Lead' },
+          { id: 'tag_edu', title: '🎓 Education Sector' },
+          { id: 'tag_follow', title: '🔄 Follow-up Tomorrow' }
+        ]
+      }]
+    }
+  });
+}
+
+async function completeCRMTaggingDemo(to) {
+  await sendMessage(to, "⏳ Updating CRM records...");
+  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
+  
+  await sendMessage(to,
+    "✅ Lead tagged successfully!\n\n" +
+    "Tags applied:\n" +
+    "• 🔥 Hot Lead\n" +
+    "• 🎓 Education Sector\n" +
+    "• 🔄 Follow-up Tomorrow");
+  
+  await sendInteractiveMessage(to, {
+    type: 'button',
+    body: { text: "Test sending to another number?" },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'crm_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'crm_done', title: 'Continue' } }
+      ]
+    }
+  });
+}
+
 async function sendDemoTestimonial(to, userType) {
   if (userType === 'School') {
-    await sendMessage(to, "📣 'As a head teacher, I can now reach 300 parents instantly. It's a game-changer!' – Mr. Kamau, Greenhill Academy");
+    await sendMessage(to, 
+      "📣 'As a head teacher, I can now reach 300 parents instantly. " +
+      "It's a game-changer!' – Mr. Kamau, Greenhill Academy");
   } else {
-    await sendMessage(to, "💬 'I run ads at night, and by morning 80 leads were already tagged and followed up.' – Faith, Salon Owner");
+    await sendMessage(to, 
+      "💬 'I run ads at night, and by morning 80 leads were already " +
+      "tagged and followed up.' – Faith, Salon Owner");
   }
 }
 
@@ -639,10 +947,39 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         break;
 
       case 'school_demo':
-        if (text && text.startsWith('demo_')) {
-          updateData.demoSelected = admin.firestore.FieldValue.arrayUnion(text);
+        if (text === 'demo_exam_alert') {
+          await runExamAlertDemo(from);
+          return;
+        } else if (text === 'demo_report_card') {
+          await runReportCardDemo(from);
+          return;
+        } else if (text === 'demo_event_reminder') {
+          await runEventReminderDemo(from);
+          return;
+        } else if (text === 'exam_all' || text === 'exam_form4') {
+          await completeExamAlertDemo(from, text);
+          return;
+        } else if (text === 'report_yes' || text === 'report_no') {
+          await completeReportCardDemo(from, text);
+          return;
+        } else if (text.startsWith('event_')) {
+          await completeEventReminderDemo(from, text);
+          return;
+        } else if (text === 'exam_test_number') {
+          await requestTestNumber(from, 'exam alert');
+          return;
+        } else if (text === 'report_test_number') {
+          await requestTestNumber(from, 'report card');
+          return;
+        } else if (text === 'event_test_number') {
+          await requestTestNumber(from, 'event reminder');
+          return;
+        } else if (/^\d{10}$/.test(text)) {
+          await confirmTestNumber(from, text, userData.demoType || 'demo');
+          return;
+        } else if (text.endsWith('_done')) {
           nextStage = 'demo_testimonial';
-          await sendDemoTestimonial(from, 'School');
+          await sendDemoTestimonial(from, userData.userType);
           await sendRatingRequest(from);
         } else {
           await sendSchoolDemoOptions(from, userData.name);
@@ -673,10 +1010,36 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         break;
 
       case 'business_demo':
-        if (text && text.startsWith('demo_')) {
-          updateData.demoSelected = admin.firestore.FieldValue.arrayUnion(text);
+        if (text === 'demo_ad_leads') {
+          await runAdLeadDemo(from);
+          return;
+        } else if (text === 'demo_autoresponder') {
+          await runAutoresponderDemo(from);
+          return;
+        } else if (text === 'demo_crm_tagging') {
+          await runCRMTaggingDemo(from);
+          return;
+        } else if (text === 'lead_capture') {
+          await completeAdLeadDemo(from);
+          return;
+        } else if (text.startsWith('auto_')) {
+          await completeAutoresponderDemo(from, text);
+          return;
+        } else if (text === 'lead_test_number') {
+          await requestTestNumber(from, 'lead capture');
+          return;
+        } else if (text === 'auto_test_number') {
+          await requestTestNumber(from, 'auto-responder');
+          return;
+        } else if (text === 'crm_test_number') {
+          await requestTestNumber(from, 'CRM tagging');
+          return;
+        } else if (/^\d{10}$/.test(text)) {
+          await confirmTestNumber(from, text, userData.demoType || 'demo');
+          return;
+        } else if (text.endsWith('_done')) {
           nextStage = 'demo_testimonial';
-          await sendDemoTestimonial(from, 'Business');
+          await sendDemoTestimonial(from, userData.userType);
           await sendRatingRequest(from);
         } else {
           await sendBusinessDemoOptions(from, userData.name, userData.businessIndustry);
