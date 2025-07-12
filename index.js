@@ -44,7 +44,6 @@ const transporter = nodemailer.createTransport({
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
 });
 
-const MESSAGE_COOLDOWN = 5000;
 const AGENT_RESPONSE_TIMEOUT = 5000;
 const DEMO_DELAY = 2000;
 const agentResponseTimers = new Map();
@@ -70,41 +69,8 @@ async function logMessage(direction, messageData) {
   }
 }
 
-async function checkCooldown(userId) {
+async function sendMessage(to, text, isAI = false) {
   try {
-    const cooldownRef = db.collection('messageCooldowns').doc(userId);
-    const doc = await cooldownRef.get();
-    
-    if (doc.exists) {
-      const lastSent = doc.data().timestamp.toDate().getTime();
-      if (Date.now() - lastSent < MESSAGE_COOLDOWN) {
-        return true;
-      }
-    }
-    return false;
-  } catch (err) {
-    console.error('Cooldown check error:', err);
-    return false;
-  }
-}
-
-async function updateCooldown(userId) {
-  try {
-    await db.collection('messageCooldowns').doc(userId).set({
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
-  } catch (err) {
-    console.error('Cooldown update error:', err);
-  }
-}
-
-async function sendMessage(to, text, isAI = false, skipCooldown = false) {
-  try {
-    if (!skipCooldown && await checkCooldown(to)) {
-      console.log(`⚠️ Message to ${to} skipped due to cooldown`);
-      return null;
-    }
-
     const response = await axios.post(
       `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -121,8 +87,6 @@ async function sendMessage(to, text, isAI = false, skipCooldown = false) {
         timeout: 10000
       }
     );
-
-    if (!skipCooldown) await updateCooldown(to);
     
     await logMessage('outgoing', {
       to,
@@ -140,13 +104,8 @@ async function sendMessage(to, text, isAI = false, skipCooldown = false) {
   }
 }
 
-async function sendInteractiveMessage(to, interactiveData, skipCooldown = false) {
+async function sendInteractiveMessage(to, interactiveData) {
   try {
-    if (!skipCooldown && await checkCooldown(to)) {
-      console.log(`⚠️ Interactive message to ${to} skipped due to cooldown`);
-      return null;
-    }
-
     const response = await axios.post(
       `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -163,8 +122,6 @@ async function sendInteractiveMessage(to, interactiveData, skipCooldown = false)
         timeout: 10000
       }
     );
-
-    if (!skipCooldown) await updateCooldown(to);
     
     await logMessage('outgoing', {
       to,
@@ -375,11 +332,11 @@ async function sendSchoolLevelSelection(to) {
       }]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function sendSchoolDemoOptions(to, userName) {
-  await sendMessage(to, "📚 Here's how we help schools like yours:", true);
+  await sendMessage(to, "📚 Here's how we help schools like yours:");
   
   const interactiveData = {
     type: 'list',
@@ -400,11 +357,11 @@ async function sendSchoolDemoOptions(to, userName) {
       }]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function runExamAlertDemo(to) {
-  await sendMessage(to, "📝 Setting up exam alert simulation...", true);
+  await sendMessage(to, "📝 Setting up exam alert simulation...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendInteractiveMessage(to, {
@@ -416,12 +373,12 @@ async function runExamAlertDemo(to) {
         { type: 'reply', reply: { id: 'exam_form4', title: 'Form 4 Only (45)' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function completeExamAlertDemo(to, choice) {
   if (choice === 'exam_all') {
-    await sendMessage(to, "⏳ Sending to 300 parents...", true);
+    await sendMessage(to, "⏳ Sending to 300 parents...");
     await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
     await sendMessage(to, 
       "✅ Sent successfully!\n\n" +
@@ -429,16 +386,16 @@ async function completeExamAlertDemo(to, choice) {
       "📅 FORM 1 EXAMS\n" +
       "Mon: Math (8-10am)\n" +
       "Tue: English (9-11am)\n" +
-      "Full timetable: bit.ly/greenhill-exams", true);
+      "Full timetable: bit.ly/greenhill-exams");
   } else {
-    await sendMessage(to, "⏳ Sending to Form 4 parents...", true);
+    await sendMessage(to, "⏳ Sending to Form 4 parents...");
     await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
     await sendMessage(to, 
       "✅ Sent to 45 parents!\n\n" +
       "Sample message:\n" +
       "📅 FORM 4 PRE-MOCKS\n" +
       "Wed: Chemistry (10am-12pm)\n" +
-      "Thu: Physics (8-10am)", true);
+      "Thu: Physics (8-10am)");
   }
   
   await sendInteractiveMessage(to, {
@@ -450,33 +407,33 @@ async function completeExamAlertDemo(to, choice) {
         { type: 'reply', reply: { id: 'exam_done', title: 'Continue' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function requestTestNumber(to, demoType) {
-  await sendMessage(to, `Please enter the phone number to test ${demoType} (format: 0700123456):`, true);
+  await sendMessage(to, `Please enter the phone number to test ${demoType} (format: 0700123456):`);
 }
 
 async function confirmTestNumber(to, number, demoType) {
-  await sendMessage(to, `⏳ Preparing to send ${demoType} demo to ${number}...`, true);
+  await sendMessage(to, `⏳ Preparing to send ${demoType} demo to ${number}...`);
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   if (demoType === 'exam alert') {
     await sendMessage(to, 
       `📤 Sent exam alert demo to ${number}:\n\n` +
       "Sample exam timetable attached\n" +
-      "View full demo at Fredsofficial.com/demo", true);
+      "View full demo at Fredsofficial.com/demo");
   } else if (demoType === 'report card') {
     await sendMessage(to,
       `📤 Sent report card demo to ${number}:\n\n` +
       "📝 Term 3 Report Card\n" +
       "Math: A\nEnglish: B+\n" +
-      "View full demo at Fredsofficial.com/demo", true);
+      "View full demo at Fredsofficial.com/demo");
   }
 }
 
 async function runReportCardDemo(to) {
-  await sendMessage(to, "📊 Generating sample report card...", true);
+  await sendMessage(to, "📊 Generating sample report card...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendMessage(to,
@@ -486,7 +443,7 @@ async function runReportCardDemo(to) {
     "Math: A\n" +
     "English: B+\n" +
     "Science: A-\n" +
-    "Comments: Excellent progress in STEM subjects", true);
+    "Comments: Excellent progress in STEM subjects");
   
   await sendInteractiveMessage(to, {
     type: 'button',
@@ -497,12 +454,12 @@ async function runReportCardDemo(to) {
         { type: 'reply', reply: { id: 'report_no', title: 'Send As Is' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function completeReportCardDemo(to, includeFeedback) {
   if (includeFeedback === 'report_yes') {
-    await sendMessage(to, "⏳ Adding feedback section...", true);
+    await sendMessage(to, "⏳ Adding feedback section...");
     await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
     await sendMessage(to,
       "✅ Report card ready with feedback request!\n\n" +
@@ -510,11 +467,11 @@ async function completeReportCardDemo(to, includeFeedback) {
       "Please reply with:\n" +
       "1 - Satisfied\n" +
       "2 - Needs improvement\n" +
-      "3 - Request meeting", true);
+      "3 - Request meeting");
   } else {
-    await sendMessage(to, "⏳ Sending report card...", true);
+    await sendMessage(to, "⏳ Sending report card...");
     await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-    await sendMessage(to, "✅ Report card sent to parents!", true);
+    await sendMessage(to, "✅ Report card sent to parents!");
   }
   
   await sendInteractiveMessage(to, {
@@ -526,11 +483,11 @@ async function completeReportCardDemo(to, includeFeedback) {
         { type: 'reply', reply: { id: 'report_done', title: 'Continue' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function runEventReminderDemo(to) {
-  await sendMessage(to, "📅 Setting up event reminder...", true);
+  await sendMessage(to, "📅 Setting up event reminder...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendInteractiveMessage(to, {
@@ -548,7 +505,7 @@ async function runEventReminderDemo(to) {
         ]
       }]
     }
-  }, true);
+  });
 }
 
 async function completeEventReminderDemo(to, eventType) {
@@ -557,7 +514,7 @@ async function completeEventReminderDemo(to, eventType) {
   else if (eventType === 'event_sports') eventName = 'Sports Day';
   else eventName = 'School Trip';
   
-  await sendMessage(to, `⏳ Creating ${eventName} reminder...`, true);
+  await sendMessage(to, `⏳ Creating ${eventName} reminder...`);
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendMessage(to,
@@ -565,7 +522,7 @@ async function completeEventReminderDemo(to, eventType) {
     "Sample message:\n" +
     `📢 ${eventName} Alert\n` +
     `Date: ${new Date(Date.now() + 86400000 * 7).toLocaleDateString()}\n` +
-    "Details: bit.ly/greenhill-events", true);
+    "Details: bit.ly/greenhill-events");
   
   await sendInteractiveMessage(to, {
     type: 'button',
@@ -576,7 +533,7 @@ async function completeEventReminderDemo(to, eventType) {
         { type: 'reply', reply: { id: 'event_done', title: 'Continue' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function sendBusinessNameRequest(to) {
@@ -602,7 +559,7 @@ async function sendBusinessIndustrySelection(to) {
       }]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function sendBusinessObjectiveSelection(to) {
@@ -617,12 +574,12 @@ async function sendBusinessObjectiveSelection(to) {
       ]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function sendBusinessDemoOptions(to, userName, businessType) {
-  await sendMessage(to, "🛍️ Here's our product catalog:", true);
-  await sendMessage(to, "Image: [Mock product catalog image]", true);
+  await sendMessage(to, "🛍️ Here's our product catalog:");
+  await sendMessage(to, "Image: [Mock product catalog image]");
   
   const interactiveData = {
     type: 'list',
@@ -643,11 +600,11 @@ async function sendBusinessDemoOptions(to, userName, businessType) {
       }]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function runAdLeadDemo(to) {
-  await sendMessage(to, "🔍 Simulating ad lead capture...", true);
+  await sendMessage(to, "🔍 Simulating ad lead capture...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendInteractiveMessage(to, {
@@ -661,18 +618,18 @@ async function runAdLeadDemo(to) {
         { type: 'reply', reply: { id: 'lead_capture', title: 'Capture Lead' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function completeAdLeadDemo(to) {
-  await sendMessage(to, "⏳ Creating lead in CRM...", true);
+  await sendMessage(to, "⏳ Creating lead in CRM...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendMessage(to,
     "✅ Lead Captured!\n" +
     "Name: John Doe\n" +
     "Interest: Premium Plan\n" +
-    "Phone: +2547******", true);
+    "Phone: +2547******");
   
   await new Promise(resolve => setTimeout(resolve, 1500));
   await sendMessage(to,
@@ -680,7 +637,7 @@ async function completeAdLeadDemo(to) {
     "1. Instant reply sent:\n" +
     "'Thanks for your interest John! Here's our Premium Plan brochure: link.com'\n\n" +
     "2. Follow-up in 24h:\n" +
-    "'Did you get a chance to review the Premium Plan details?'", true);
+    "'Did you get a chance to review the Premium Plan details?'");
   
   await sendInteractiveMessage(to, {
     type: 'button',
@@ -691,11 +648,11 @@ async function completeAdLeadDemo(to) {
         { type: 'reply', reply: { id: 'lead_done', title: 'Continue' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function runAutoresponderDemo(to) {
-  await sendMessage(to, "🤖 Setting up auto-responder...", true);
+  await sendMessage(to, "🤖 Setting up auto-responder...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendInteractiveMessage(to, {
@@ -713,7 +670,7 @@ async function runAutoresponderDemo(to) {
         ]
       }]
     }
-  }, true);
+  });
 }
 
 async function completeAutoresponderDemo(to, triggerType) {
@@ -722,14 +679,14 @@ async function completeAutoresponderDemo(to, triggerType) {
   else if (triggerType === 'auto_hours') triggerName = 'after hours';
   else triggerName = 'all messages';
   
-  await sendMessage(to, `⏳ Configuring ${triggerName} responder...`, true);
+  await sendMessage(to, `⏳ Configuring ${triggerName} responder...`);
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendMessage(to,
     `✅ ${triggerName.charAt(0).toUpperCase() + triggerName.slice(1)} responder active!\n\n` +
     "Sample triggered response:\n" +
     "Thanks for your message! Our team will respond within 24 hours. " +
-    "For urgent inquiries, call 0700123456.", true);
+    "For urgent inquiries, call 0700123456.");
   
   await sendInteractiveMessage(to, {
     type: 'button',
@@ -740,11 +697,11 @@ async function completeAutoresponderDemo(to, triggerType) {
         { type: 'reply', reply: { id: 'auto_done', title: 'Continue' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function runCRMTaggingDemo(to) {
-  await sendMessage(to, "🏷️ Simulating CRM tagging...", true);
+  await sendMessage(to, "🏷️ Simulating CRM tagging...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendInteractiveMessage(to, {
@@ -762,11 +719,11 @@ async function runCRMTaggingDemo(to) {
         ]
       }]
     }
-  }, true);
+  });
 }
 
 async function completeCRMTaggingDemo(to) {
-  await sendMessage(to, "⏳ Updating CRM records...", true);
+  await sendMessage(to, "⏳ Updating CRM records...");
   await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
   
   await sendMessage(to,
@@ -774,7 +731,7 @@ async function completeCRMTaggingDemo(to) {
     "Tags applied:\n" +
     "• 🔥 Hot Lead\n" +
     "• 🎓 Education Sector\n" +
-    "• 🔄 Follow-up Tomorrow", true);
+    "• 🔄 Follow-up Tomorrow");
   
   await sendInteractiveMessage(to, {
     type: 'button',
@@ -785,18 +742,18 @@ async function completeCRMTaggingDemo(to) {
         { type: 'reply', reply: { id: 'crm_done', title: 'Continue' } }
       ]
     }
-  }, true);
+  });
 }
 
 async function sendDemoTestimonial(to, userType) {
   if (userType === 'School') {
     await sendMessage(to, 
       "📣 'As a head teacher, I can now reach 300 parents instantly. " +
-      "It's a game-changer!' – Mr. Kamau, Greenhill Academy", true);
+      "It's a game-changer!' – Mr. Kamau, Greenhill Academy");
   } else {
     await sendMessage(to, 
       "💬 'I run ads at night, and by morning 80 leads were already " +
-      "tagged and followed up.' – Faith, Salon Owner", true);
+      "tagged and followed up.' – Faith, Salon Owner");
   }
 }
 
@@ -812,15 +769,15 @@ async function sendRatingRequest(to) {
       ]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function sendDemoBookingCTA(to, userType) {
   const calendarLink = "https://calendly.com/fredsofficial/demo";
   if (userType === 'School') {
-    await sendMessage(to, `📅 Book a Free Demo Call: ${calendarLink}`, true);
+    await sendMessage(to, `📅 Book a Free Demo Call: ${calendarLink}`);
   } else {
-    await sendMessage(to, `🚀 Schedule a Demo to Automate Your Sales: ${calendarLink}`, true);
+    await sendMessage(to, `🚀 Schedule a Demo to Automate Your Sales: ${calendarLink}`);
   }
 }
 
@@ -855,7 +812,7 @@ async function sendFinalReview(to, userData) {
       ]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function sendMenuOptions(to) {
@@ -870,7 +827,7 @@ async function sendMenuOptions(to) {
       ]
     }
   };
-  await sendInteractiveMessage(to, interactiveData, true);
+  await sendInteractiveMessage(to, interactiveData);
 }
 
 async function handleOnboardingStage(from, text, stage, userRef, userData) {
