@@ -403,7 +403,7 @@ async function completeExamAlertDemo(to, choice) {
     body: { text: "Would you like to test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'exam_test_number', title: 'Test on Another Number' } },
+        { type: 'reply', reply: { id: 'exam_test_number', title: 'Again' } },
         { type: 'reply', reply: { id: 'exam_done', title: 'Continue' } }
       ]
     }
@@ -479,7 +479,7 @@ async function completeReportCardDemo(to, includeFeedback) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'report_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'report_test_number', title: 'Another' } },
         { type: 'reply', reply: { id: 'report_done', title: 'Continue' } }
       ]
     }
@@ -529,7 +529,7 @@ async function completeEventReminderDemo(to, eventType) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'event_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'event_test_number', title: 'Another' } },
         { type: 'reply', reply: { id: 'event_done', title: 'Continue' } }
       ]
     }
@@ -644,7 +644,7 @@ async function completeAdLeadDemo(to) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'lead_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'lead_test_number', title: 'Another' } },
         { type: 'reply', reply: { id: 'lead_done', title: 'Continue' } }
       ]
     }
@@ -693,7 +693,7 @@ async function completeAutoresponderDemo(to, triggerType) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'auto_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'auto_test_number', title: 'Another' } },
         { type: 'reply', reply: { id: 'auto_done', title: 'Continue' } }
       ]
     }
@@ -738,7 +738,7 @@ async function completeCRMTaggingDemo(to) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'crm_test_number', title: 'Test Another Number' } },
+        { type: 'reply', reply: { id: 'crm_test_number', title: 'Another' } },
         { type: 'reply', reply: { id: 'crm_done', title: 'Continue' } }
       ]
     }
