@@ -29,8 +29,7 @@ const {
   GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
   PUBLIC_KEY,
-  GOOGLE_PRIVATE_KEY,
-  ADMIN_PHONE
+  GOOGLE_PRIVATE_KEY
 } = process.env;
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
@@ -66,7 +65,7 @@ async function logMessage(direction, messageData) {
 
     await db.collection('whatsapp_logs').add(logData);
   } catch (err) {
-    console.error('Failed to log message:', err);
+    console.error('❌ Failed to log message:', err);
   }
 }
 
@@ -100,7 +99,7 @@ async function sendMessage(to, text, isAI = false) {
 
     return response;
   } catch (err) {
-    console.error('Send message error:', err.response?.data || err.message);
+    console.error('❌ Send message error:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -134,7 +133,7 @@ async function sendInteractiveMessage(to, interactiveData) {
 
     return response;
   } catch (err) {
-    console.error('Interactive message error:', err.response?.data || err.message);
+    console.error('❌ Interactive message error:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -142,7 +141,7 @@ async function sendInteractiveMessage(to, interactiveData) {
 async function updateGoogleSheet(userData) {
   try {
     if (!GOOGLE_SHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
-      console.log('Google Sheets credentials missing - skipping update');
+      console.log('⚠️ Google Sheets credentials missing - skipping update');
       return;
     }
 
@@ -181,17 +180,7 @@ async function updateGoogleSheet(userData) {
       await sheet.addRow(record);
     }
   } catch (err) {
-    console.error('Google Sheets error:', err.message);
-  }
-}
-
-async function notifyAdmin(userData) {
-  try {
-    const message = `🎉 New user completed onboarding!\n\nName: ${userData.name}\nPhone: ${userData.phone}\nType: ${userData.userType}\n${userData.userType === 'School' ? `School: ${userData.schoolName}` : `Business: ${userData.businessIndustry}`}`;
-    
-    await sendMessage(ADMIN_PHONE, message);
-  } catch (err) {
-    console.error('Admin notification failed:', err);
+    console.error('❌ Google Sheets error:', err.message);
   }
 }
 
@@ -270,7 +259,7 @@ async function getAIResponse(userText, userId) {
 
     return response;
   } catch (err) {
-    console.error('AI error:', err.response?.data || err.message);
+    console.error('❌ AI error:', err.response?.data || err.message);
     return "🔧 My circuits are a bit busy! Try asking again or visit Fredsofficial.com";
   }
 }
@@ -292,12 +281,14 @@ async function sendWelcomeMessage(to) {
   const interactiveData = {
     type: 'button',
     body: {
-      text: "🌟 Welcome to Fred's Official WhatsApp Assistant! 🌟\n\nLet's get you started with a quick setup for personalized service."
+      text: "👋 Welcome to Fred's Official WhatsApp Automation Assistant 🌟\n\n" +
+            "To provide the best experience, we'll collect some information. " +
+            "Your data will only be used to personalize your experience."
     },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'welcome_agree', title: '✨ Yes, Let\'s Go!' } },
-        { type: 'reply', reply: { id: 'welcome_later', title: '⏰ Remind Me Later' } }
+        { type: 'reply', reply: { id: 'welcome_agree', title: 'Yes, I Agree' } },
+        { type: 'reply', reply: { id: 'welcome_later', title: 'Remind Me Later' } }
       ]
     }
   };
@@ -311,7 +302,7 @@ async function sendUserTypeSelection(to) {
     action: {
       buttons: [
         { type: 'reply', reply: { id: 'userType_school', title: '🏫 School' } },
-        { type: 'reply', reply: { id: 'userType_business', title: '🏢 Business' } }
+        { type: 'reply', reply: { id: 'userType_business', title: '🏪 Business' } }
       ]
     }
   };
@@ -319,14 +310,14 @@ async function sendUserTypeSelection(to) {
 }
 
 async function sendSchoolNameRequest(to) {
-  await sendMessage(to, "🏫 What's your school's full name? (e.g., Greenhill Academy)");
+  await sendMessage(to, "🏫 Please share your school's full name:");
 }
 
 async function sendSchoolLevelSelection(to) {
   const interactiveData = {
     type: 'list',
-    header: { type: 'text', text: '🎓 Select School Level' },
-    body: { text: 'Which level best describes your institution?' },
+    header: { type: 'text', text: '🎓 School Level' },
+    body: { text: 'Which level best describes your school?' },
     action: {
       button: 'Select Level',
       sections: [{
@@ -345,13 +336,14 @@ async function sendSchoolLevelSelection(to) {
 }
 
 async function sendSchoolDemoOptions(to, userName) {
-  await sendMessage(to, `📚 ${userName}, here's how we help schools like yours:`);
+  await sendMessage(to, "📚 Here's how we help schools like yours:");
   
   const interactiveData = {
     type: 'list',
-    header: { type: 'text', text: '🏫 School Tools Demo' },
+    header: { type: 'text', text: '🏫 School Automation Demo' },
     body: { 
-      text: "Tap to experience a live simulation:" 
+      text: `${userName}, try these school communication tools:\n` +
+            "Tap to experience a simulation" 
     },
     action: {
       button: 'View Demos',
@@ -408,18 +400,18 @@ async function completeExamAlertDemo(to, choice) {
   
   await sendInteractiveMessage(to, {
     type: 'button',
-    body: { text: "Test sending to another number?" },
+    body: { text: "Would you like to test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'exam_test_number', title: '🔁 Again' } },
-        { type: 'reply', reply: { id: 'exam_done', title: '🚀 Continue' } }
+        { type: 'reply', reply: { id: 'exam_test_number', title: 'Again' } },
+        { type: 'reply', reply: { id: 'exam_done', title: 'Continue' } }
       ]
     }
   });
 }
 
 async function requestTestNumber(to, demoType) {
-  await sendMessage(to, `📱 Enter phone number to test ${demoType} (format: 0700123456):`);
+  await sendMessage(to, `Please enter the phone number to test ${demoType} (format: 0700123456):`);
 }
 
 async function confirmTestNumber(to, number, demoType) {
@@ -458,8 +450,8 @@ async function runReportCardDemo(to) {
     body: { text: "Include parent feedback request?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'report_yes', title: '✅ Yes, Add Feedback' } },
-        { type: 'reply', reply: { id: 'report_no', title: '📤 Send As Is' } }
+        { type: 'reply', reply: { id: 'report_yes', title: 'Yes, Add Feedback' } },
+        { type: 'reply', reply: { id: 'report_no', title: 'Send As Is' } }
       ]
     }
   });
@@ -487,8 +479,8 @@ async function completeReportCardDemo(to, includeFeedback) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'report_test_number', title: '🔁 Another' } },
-        { type: 'reply', reply: { id: 'report_done', title: '🚀 Continue' } }
+        { type: 'reply', reply: { id: 'report_test_number', title: 'Another' } },
+        { type: 'reply', reply: { id: 'report_done', title: 'Continue' } }
       ]
     }
   });
@@ -537,21 +529,21 @@ async function completeEventReminderDemo(to, eventType) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'event_test_number', title: '🔁 Another' } },
-        { type: 'reply', reply: { id: 'event_done', title: '🚀 Continue' } }
+        { type: 'reply', reply: { id: 'event_test_number', title: 'Another' } },
+        { type: 'reply', reply: { id: 'event_done', title: 'Continue' } }
       ]
     }
   });
 }
 
 async function sendBusinessNameRequest(to) {
-  await sendMessage(to, "🏢 What's your business name? (e.g., Elite Consulting)");
+  await sendMessage(to, "🏢 Please share your business name:");
 }
 
 async function sendBusinessIndustrySelection(to) {
   const interactiveData = {
     type: 'list',
-    header: { type: 'text', text: '🏢 Select Industry' },
+    header: { type: 'text', text: '🏢 Business Industry' },
     body: { text: 'Which industry best describes your business?' },
     action: {
       button: 'Select Industry',
@@ -576,9 +568,9 @@ async function sendBusinessObjectiveSelection(to) {
     body: { text: "What's your primary objective for using our services?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'objective_lead', title: '🧲 Lead Capture' } },
-        { type: 'reply', reply: { id: 'objective_support', title: '🛎️ Client Support' } },
-        { type: 'reply', reply: { id: 'objective_both', title: '🤝 Both' } }
+        { type: 'reply', reply: { id: 'objective_lead', title: 'Lead Capture' } },
+        { type: 'reply', reply: { id: 'objective_support', title: 'Client Support' } },
+        { type: 'reply', reply: { id: 'objective_both', title: 'Both' } }
       ]
     }
   };
@@ -586,13 +578,15 @@ async function sendBusinessObjectiveSelection(to) {
 }
 
 async function sendBusinessDemoOptions(to, userName, businessType) {
-  await sendMessage(to, `🛍️ ${userName}, here's our product catalog for ${businessType} businesses:`);
+  await sendMessage(to, "🛍️ Here's our product catalog:");
+  await sendMessage(to, "Image: [Mock product catalog image]");
   
   const interactiveData = {
     type: 'list',
     header: { type: 'text', text: '🧲 Business Solutions' },
     body: { 
-      text: "Tap to experience a live simulation:" 
+      text: `${userName}, try these ${businessType} business tools:\n` +
+            "Tap to experience a simulation" 
     },
     action: {
       button: 'View Demos',
@@ -621,7 +615,7 @@ async function runAdLeadDemo(to) {
     },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'lead_capture', title: '🧲 Capture Lead' } }
+        { type: 'reply', reply: { id: 'lead_capture', title: 'Capture Lead' } }
       ]
     }
   });
@@ -650,8 +644,8 @@ async function completeAdLeadDemo(to) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'lead_test_number', title: '🔁 Another' } },
-        { type: 'reply', reply: { id: 'lead_done', title: '🚀 Continue' } }
+        { type: 'reply', reply: { id: 'lead_test_number', title: 'Another' } },
+        { type: 'reply', reply: { id: 'lead_done', title: 'Continue' } }
       ]
     }
   });
@@ -699,8 +693,8 @@ async function completeAutoresponderDemo(to, triggerType) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'auto_test_number', title: '🔁 Another' } },
-        { type: 'reply', reply: { id: 'auto_done', title: '🚀 Continue' } }
+        { type: 'reply', reply: { id: 'auto_test_number', title: 'Another' } },
+        { type: 'reply', reply: { id: 'auto_done', title: 'Continue' } }
       ]
     }
   });
@@ -744,8 +738,8 @@ async function completeCRMTaggingDemo(to) {
     body: { text: "Test sending to another number?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'crm_test_number', title: '🔁 Another' } },
-        { type: 'reply', reply: { id: 'crm_done', title: '🚀 Continue' } }
+        { type: 'reply', reply: { id: 'crm_test_number', title: 'Another' } },
+        { type: 'reply', reply: { id: 'crm_done', title: 'Continue' } }
       ]
     }
   });
@@ -755,18 +749,18 @@ async function sendDemoTestimonial(to, userType) {
   if (userType === 'School') {
     await sendMessage(to, 
       "📣 'As a head teacher, I can now reach 300 parents instantly. " +
-      "Saved us 20 hours/month!' – Mr. Kamau, Greenhill Academy");
+      "It's a game-changer!' – Mr. Kamau, Greenhill Academy");
   } else {
     await sendMessage(to, 
       "💬 'I run ads at night, and by morning 80 leads were already " +
-      "tagged and followed up. Revenue ↗️ 35%' – Faith, Salon Owner");
+      "tagged and followed up.' – Faith, Salon Owner");
   }
 }
 
 async function sendRatingRequest(to) {
   const interactiveData = {
     type: 'button',
-    body: { text: "⭐ Rate your demo experience (1-5):" },
+    body: { text: "⭐ How helpful was this demonstration?" },
     action: {
       buttons: [
         { type: 'reply', reply: { id: 'rating_1', title: '⭐ 1' } },
@@ -781,36 +775,40 @@ async function sendRatingRequest(to) {
 async function sendDemoBookingCTA(to, userType) {
   const calendarLink = "https://calendly.com/fredsofficial/demo";
   if (userType === 'School') {
-    await sendMessage(to, `📅 Ready to automate your school? Book FREE demo: ${calendarLink}`);
+    await sendMessage(to, `📅 Book a Free Demo Call: ${calendarLink}`);
   } else {
-    await sendMessage(to, `🚀 Boost your sales! Schedule demo: ${calendarLink}`);
+    await sendMessage(to, `🚀 Schedule a Demo to Automate Your Sales: ${calendarLink}`);
   }
 }
 
 async function sendFinalReview(to, userData) {
-  let summary = "📋 Your profile summary:\n\n";
+  let summary = "📋 Here's what we've collected:\n\n";
   
   if (userData.userType === 'School') {
-    summary += `🏫 School: ${userData.schoolName}\n`;
-    summary += `🎓 Level: ${userData.schoolLevel}\n`;
+    summary += `Name: ${userData.name}\n`;
+    summary += `Type: School\n`;
+    summary += `School: ${userData.schoolName}\n`;
+    summary += `Level: ${userData.schoolLevel}\n`;
   } else {
-    summary += `🏢 Industry: ${userData.businessIndustry}\n`;
-    summary += `🎯 Objective: ${userData.objective}\n`;
+    summary += `Name: ${userData.name}\n`;
+    summary += `Type: Business\n`;
+    summary += `Industry: ${userData.businessIndustry}\n`;
+    summary += `Objective: ${userData.objective}\n`;
   }
   
   if (userData.demoRating) {
-    summary += `⭐ Rating: ${'⭐'.repeat(userData.demoRating)}\n`;
+    summary += `Demo Rating: ${'⭐'.repeat(userData.demoRating)}\n`;
   }
   
-  summary += `\nReady to proceed or need human assistance?`;
+  summary += `\nWould you like to save and continue later or talk to a human agent?`;
 
   const interactiveData = {
     type: 'button',
     body: { text: summary },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'final_continue', title: '✅ Continue' } },
-        { type: 'reply', reply: { id: 'final_agent', title: '👩‍💼 Talk to Agent' } }
+        { type: 'reply', reply: { id: 'final_continue', title: 'Continue' } },
+        { type: 'reply', reply: { id: 'final_agent', title: 'Talk to Agent' } }
       ]
     }
   };
@@ -820,12 +818,12 @@ async function sendFinalReview(to, userData) {
 async function sendMenuOptions(to) {
   const interactiveData = {
     type: 'button',
-    body: { text: "Menu Options:" },
+    body: { text: "Would you like to resume where you left off or start over?" },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'menu_resume', title: '↩️ Resume' } },
-        { type: 'reply', reply: { id: 'menu_restart', title: '🔄 Start Fresh' } },
-        { type: 'reply', reply: { id: 'menu_agent', title: '👩‍💼 Agent Help' } }
+        { type: 'reply', reply: { id: 'menu_resume', title: 'Resume' } },
+        { type: 'reply', reply: { id: 'menu_restart', title: 'Start Fresh' } },
+        { type: 'reply', reply: { id: 'menu_agent', title: 'Talk to Agent' } }
       ]
     }
   };
@@ -844,7 +842,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
           await sendUserTypeSelection(from);
         } else if (text === 'welcome_later') {
           await setOnboardingTimeout(from);
-          await sendMessage(from, "No problem! We'll remind you in 24 hours. Type MENU anytime to begin.");
+          await sendMessage(from, "No problem! We'll remind you in 24 hours. Type 'menu' anytime to begin.");
           return;
         } else {
           await sendWelcomeMessage(from);
@@ -878,7 +876,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
             await sendBusinessIndustrySelection(from);
           }
         } else {
-          await sendMessage(from, "Please provide a valid name (at least 2 characters)");
+          await sendMessage(from, "❌ Please provide a valid name (at least 2 characters)");
           return;
         }
         break;
@@ -889,7 +887,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
           nextStage = 'school_level';
           await sendSchoolLevelSelection(from);
         } else {
-          await sendMessage(from, "Please provide a valid school name");
+          await sendMessage(from, "❌ Please provide a valid school name");
           return;
         }
         break;
@@ -1026,23 +1024,16 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         if (text === 'final_continue') {
           updateData['onboarding.completed'] = true;
           updateData['onboarding.completedAt'] = admin.firestore.FieldValue.serverTimestamp();
-          await sendMessage(from, "🎉 Onboarding complete! Type MENU anytime for help.");
-          await notifyAdmin({
-            name: userData.name,
-            phone: from,
-            userType: userData.userType,
-            schoolName: userData.schoolName,
-            businessIndustry: userData.businessIndustry
-          });
+          await sendMessage(from, "🎉 Thank you for completing the onboarding! Type 'menu' anytime to access these options again.");
         } else if (text === 'final_agent') {
           updateData.requiresAgent = true;
           updateData.agentRequestedAt = admin.firestore.FieldValue.serverTimestamp();
-          await sendMessage(from, "Connecting you to an agent...");
+          await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
           
           agentResponseTimers.set(from, setTimeout(async () => {
             const currentUserData = (await db.collection('users').doc(from).get()).data();
             if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
-              await sendMessage(from, "Agents are busy. Let me help instead!");
+              await sendMessage(from, "Our agents are currently busy. Let me help you instead!");
               const aiResponse = await getAIResponse(text, from);
               await sendMessage(from, aiResponse);
               await db.collection('users').doc(from).update({
@@ -1058,7 +1049,7 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
         break;
 
       default:
-        await sendMessage(from, "Type MENU to see options.");
+        await sendMessage(from, "Sorry, I didn't understand that. Type 'menu' to see options.");
         return;
     }
 
@@ -1074,11 +1065,11 @@ async function handleOnboardingStage(from, text, stage, userRef, userData) {
 
   } catch (err) {
     console.error('Onboarding error:', err);
-    await sendMessage(from, "⚠️ Error encountered. Type MENU to restart.");
+    await sendMessage(from, "⚠️ We encountered an error. Please try again or type 'menu' to restart.");
   }
 }
 
-app.get('/', (req, res) => res.send('WhatsApp Bot running'));
+app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
 
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -1102,9 +1093,7 @@ app.post('/webhook', async (req, res) => {
 
     if (!message || !from) return res.sendStatus(200);
 
-    const userRef = db.collection('users').doc(from);
-    const userDoc = await userRef.get();
-    const userData = userDoc.exists ? userDoc.data() : null;
+    console.log('Webhook received:', message.type, 'from:', from);
 
     await logMessage('incoming', {
       from,
@@ -1112,6 +1101,10 @@ app.post('/webhook', async (req, res) => {
       message: message,
       userId: from
     });
+
+    const userRef = db.collection('users').doc(from);
+    const userDoc = await userRef.get();
+    const userData = userDoc.exists ? userDoc.data() : null;
 
     if (message.text?.body?.toLowerCase().trim() === 'menu') {
       if (!userDoc.exists) {
@@ -1141,12 +1134,12 @@ app.post('/webhook', async (req, res) => {
         requiresAgent: true,
         agentRequestedAt: admin.firestore.FieldValue.serverTimestamp()
       });
-      await sendMessage(from, "Connecting you to an agent...");
+      await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
       
       agentResponseTimers.set(from, setTimeout(async () => {
         const currentUserData = (await db.collection('users').doc(from).get()).data();
         if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
-          await sendMessage(from, "Agents are busy. Let me help instead!");
+          await sendMessage(from, "Our agents are currently busy. Let me help you instead!");
           const aiResponse = await getAIResponse(message.text?.body || '', from);
           await sendMessage(from, aiResponse);
           await db.collection('users').doc(from).update({
@@ -1165,7 +1158,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (userData?.onboarding?.timeoutAt?.toDate() < new Date()) {
-      await sendMessage(from, "Session expired. Type MENU to begin.");
+      await sendMessage(from, "⏰ Our conversation timed out. Type 'menu' to begin again.");
       await userRef.update({ 'onboarding.closed': true });
       return res.sendStatus(200);
     }
@@ -1210,11 +1203,12 @@ app.post('/webhook', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`⏰ Last restart: ${new Date().toISOString()}`);
 });
 
 process.on('SIGTERM', () => {
-  console.log('Shutting down gracefully...');
+  console.log('SIGTERM received. Shutting down gracefully...');
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
