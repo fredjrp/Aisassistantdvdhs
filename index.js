@@ -40,7 +40,6 @@ rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-// Add this right after Firebase initialization (after admin.initializeApp)
 async function initializeFirebaseCollections() {
   const requiredCollections = [
     'products',
@@ -76,7 +75,7 @@ async function initializeFirebaseCollections() {
   };
 
   try {
-    console.log("Checking Firebase collections...");
+    console.log("Initializing Firebase collections...");
     
     for (const collectionName of requiredCollections) {
       const collectionRef = db.collection(collectionName);
@@ -85,11 +84,10 @@ async function initializeFirebaseCollections() {
       if (snapshot.empty) {
         console.log(`Creating collection: ${collectionName}`);
         
-        // Add sample document to create the collection
         if (collectionName === 'products') {
-          await collectionRef.add(sampleProduct);
+          const docRef = await collectionRef.add(sampleProduct);
+          console.log(`Added sample product with ID: ${docRef.id}`);
         } else if (collectionName === 'complementary_products') {
-          // First ensure sample products exist
           const productRef = db.collection('products').doc('sample_product_id');
           await productRef.set(sampleProduct);
           
@@ -105,23 +103,24 @@ async function initializeFirebaseCollections() {
           
           await collectionRef.add(sampleComplementary);
         } else {
-          // Create empty collection with one dummy document
           await collectionRef.add({
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            placeholder: true
+            placeholder: true,
+            note: "Initial collection setup"
           });
         }
       }
     }
     
-    console.log("Firebase collections verified");
+    console.log("Firebase collections initialization complete");
   } catch (error) {
     console.error("Error initializing collections:", error);
   }
 }
 
-// Call this function right after admin.initializeApp
-initializeFirebaseCollections().catch(console.error);
+initializeFirebaseCollections().catch(err => {
+  console.error("Failed to initialize collections:", err);
+});
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -305,6 +304,14 @@ async function updateGoogleSheet(userData) {
   }
 }
 
+function getTrialDay(userData) {
+  if (!userData.trialStartDate) return 0;
+  const startDate = userData.trialStartDate.toDate();
+  const now = new Date();
+  const diffTime = Math.abs(now - startDate);
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
 async function getAIResponse(userText, userId, context = '') {
   const userRef = await db.collection('users').doc(userId).get();
   const userData = userRef.data() || {};
@@ -367,14 +374,6 @@ async function getAIResponse(userText, userId, context = '') {
   }
 }
 
-function getTrialDay(userData) {
-  if (!userData.trialStartDate) return 0;
-  const startDate = userData.trialStartDate.toDate();
-  const now = new Date();
-  const diffTime = Math.abs(now - startDate);
-  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-}
-
 async function sendWelcomeMessage(to) {
   const interactiveData = {
     type: 'button',
@@ -405,18 +404,16 @@ async function sendProductCatalog(to) {
       return;
     }
 
-    // For first product, send image with details
     const firstProduct = products[0];
     if (firstProduct.images && firstProduct.images.length > 0) {
       await sendImageMessage(to, firstProduct.images[0], 
         `${firstProduct.name}\n${firstProduct.description}\nPrice: KES ${firstProduct.price}`);
     }
 
-    const remainingProducts = products.slice(1);
-    if (remainingProducts.length > 0) {
+    if (products.length > 1) {
       const sections = [{
         title: 'Available Products',
-        rows: remainingProducts.map(product => ({
+        rows: products.slice(1).map(product => ({
           id: `product_${product.id}`,
           title: product.name,
           description: `KES ${product.price}`
@@ -495,7 +492,6 @@ async function sendProductDetails(to, productId) {
 
 async function requestDeliveryDetails(to, productId, isTrial = true) {
   try {
-    // First request house number for residents
     const userDoc = await db.collection('users').doc(to).get();
     const userData = userDoc.data() || {};
 
@@ -511,7 +507,6 @@ async function requestDeliveryDetails(to, productId, isTrial = true) {
       return;
     }
 
-    // Then request date
     await sendMessage(to, "Please enter your preferred delivery date (DD-MM-YYYY):");
     await db.collection('users').doc(to).update({
       onboarding: {
@@ -654,7 +649,6 @@ async function startTrialPeriod(to, productId, deliveryDate, timeSlot) {
 
     await sendMessage(to, `Your 1-week trial for ${productId} starts upon delivery. We'll check in during your trial period.`);
 
-    // Schedule check-ins
     scheduleTrialCheckins(to);
   } catch (err) {
     console.error('Trial start error:', err);
@@ -664,11 +658,11 @@ async function startTrialPeriod(to, productId, deliveryDate, timeSlot) {
 
 async function scheduleTrialCheckins(userId) {
   const checkinIntervals = [
-    { hours: 3 },    // 3 hours after delivery
-    { hours: 24 },   // 1 day after
-    { days: 3 },     // 3 days after
-    { days: 5 },     // 5 days after
-    { days: 7 }      // 7 days after (trial end)
+    { hours: 3 },
+    { hours: 24 },
+    { days: 3 },
+    { days: 5 },
+    { days: 7 }
   ];
 
   for (const interval of checkinIntervals) {
@@ -702,11 +696,9 @@ async function sendTrialCheckin(userId, userData) {
       message = `Your trial period has ended. Would you like to purchase the ${product.name}?`;
     }
 
-    // Get product tips from AI
     const tipsContext = `Generate 1-2 short bullet points about using ${product.name} (${product.description}). Focus on helpful tips for day ${trialDay} of use.`;
     const productTips = await getAIResponse('', userId, tipsContext);
 
-    // Get complementary products
     const compProducts = await getComplementaryProducts(userData.currentTrialProduct);
 
     let fullMessage = `${message}\n\n`;
@@ -812,9 +804,6 @@ async function requestPayment(to) {
 
 async function verifyPayment(to, paymentDetails) {
   try {
-    // In a real implementation, you would verify with your payment provider
-    // For this example, we'll simulate verification
-    
     await db.collection('users').doc(to).update({
       paymentStatus: 'completed',
       status: 'customer',
@@ -860,7 +849,6 @@ async function verifyPayment(to, paymentDetails) {
 
     await sendInteractiveMessage(to, interactiveData);
 
-    // Schedule follow-ups
     schedulePostPurchaseFollowups(to);
   } catch (err) {
     console.error('Payment verification error:', err);
@@ -870,9 +858,9 @@ async function verifyPayment(to, paymentDetails) {
 
 async function schedulePostPurchaseFollowups(userId) {
   const followupIntervals = [
-    { days: 3 },    // 3 days after purchase
-    { days: 7 },    // 1 week after
-    { days: 30 }    // 1 month after
+    { days: 3 },
+    { days: 7 },
+    { days: 30 }
   ];
 
   for (const interval of followupIntervals) {
@@ -939,7 +927,6 @@ async function createCase(userId, issueType) {
 
     await sendMessage(userId, `Case created: ${caseNumber}\n\nAn agent will contact you shortly.`);
 
-    // Assign to available agent
     assignCaseToAgent(caseNumber);
   } catch (err) {
     console.error('Case creation error:', err);
@@ -948,8 +935,6 @@ async function createCase(userId, issueType) {
 }
 
 async function assignCaseToAgent(caseNumber) {
-  // Implementation would depend on your agent assignment logic
-  // This is a simplified version
   const agentsSnapshot = await db.collection('agents')
     .where('available', '==', true)
     .limit(1)
@@ -1042,7 +1027,6 @@ app.post('/webhook', async (req, res) => {
     const userDoc = await userRef.get();
     const userData = userDoc.exists ? userDoc.data() : null;
 
-    // Handle menu command
     if (message.text?.body?.toLowerCase().trim() === 'menu') {
       if (!userDoc.exists) {
         await sendWelcomeMessage(from);
@@ -1052,7 +1036,6 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Handle case check
     if (message.text?.body?.toLowerCase().includes('case')) {
       if (userData?.caseNumber) {
         const caseDoc = await db.collection('cases').where('caseNumber', '==', userData.caseNumber).limit(1).get();
@@ -1068,7 +1051,6 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Handle onboarding flow
     if (!userDoc.exists) {
       await userRef.set({
         phone: from,
@@ -1079,12 +1061,10 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Update last active timestamp
     await userRef.update({
       lastActive: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    // Extract message text
     let text = '';
     if (message.type === 'text') {
       text = message.text?.body || '';
@@ -1096,40 +1076,34 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Handle onboarding stages
     if (userData.onboarding?.stage) {
       await handleOnboardingStage(from, text, userData.onboarding.stage, userRef, userData);
       return res.sendStatus(200);
     }
 
-    // Handle product selection
     if (text.startsWith('product_')) {
       const productId = text.replace('product_', '');
       await sendProductDetails(from, productId);
       return res.sendStatus(200);
     }
 
-    // Handle trial booking
     if (text.startsWith('book_')) {
       const productId = text.replace('book_', '');
       await requestDeliveryDetails(from, productId, true);
       return res.sendStatus(200);
     }
 
-    // Handle direct purchase
     if (text.startsWith('buy_')) {
       const productId = text.replace('buy_', '');
       await requestDeliveryDetails(from, productId, false);
       return res.sendStatus(200);
     }
 
-    // Handle back to catalog
     if (text === 'back_catalog') {
       await sendProductCatalog(from);
       return res.sendStatus(200);
     }
 
-    // Handle payment confirmation
     if (text === 'payment_done') {
       const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
       const product = productDoc.data() || {};
@@ -1141,27 +1115,23 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Handle feedback
     if (text === 'feedback_yes') {
       await sendMessage(from, "Please share your feedback about your purchase experience and product quality:");
       await userRef.update({ 'onboarding.stage': 'feedback' });
       return res.sendStatus(200);
     }
 
-    // Handle case creation
     if (text === 'followup_issues' || text === 'checkin_issues') {
       await createCase(from, text === 'followup_issues' ? 'post_purchase_issue' : 'trial_issue');
       return res.sendStatus(200);
     }
 
-    // Default AI response for customers
     if (userData.status === 'customer') {
       const aiResponse = await getAIResponse(text, from);
       await sendMessage(from, aiResponse, true);
       return res.sendStatus(200);
     }
 
-    // Default response
     await sendMessage(from, "Sorry, I didn't understand that. Type MENU to see options.");
     res.sendStatus(200);
   } catch (err) {
@@ -1314,4 +1284,3 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
-
