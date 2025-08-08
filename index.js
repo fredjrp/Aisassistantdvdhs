@@ -40,6 +40,89 @@ rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
+// Add this right after Firebase initialization (after admin.initializeApp)
+async function initializeFirebaseCollections() {
+  const requiredCollections = [
+    'products',
+    'complementary_products',
+    'orders',
+    'cases',
+    'feedback',
+    'agents',
+    'whatsapp_logs',
+    'users'
+  ];
+
+  const sampleProduct = {
+    name: "Premium Power Bank 20,000mAh",
+    description: "High-capacity portable charger with fast charging",
+    price: 3500,
+    images: ["https://example.com/powerbank.jpg"],
+    specs: {
+      capacity: "20000mAh",
+      output: "5V/2.4A",
+      input: "5V/2A",
+      weight: "350g"
+    },
+    active: true,
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  };
+
+  const sampleComplementary = {
+    mainProduct: "sample_product_id",
+    complementaryProduct: "sample_accessory_id",
+    relationType: "accessory",
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  };
+
+  try {
+    console.log("Checking Firebase collections...");
+    
+    for (const collectionName of requiredCollections) {
+      const collectionRef = db.collection(collectionName);
+      const snapshot = await collectionRef.limit(1).get();
+      
+      if (snapshot.empty) {
+        console.log(`Creating collection: ${collectionName}`);
+        
+        // Add sample document to create the collection
+        if (collectionName === 'products') {
+          await collectionRef.add(sampleProduct);
+        } else if (collectionName === 'complementary_products') {
+          // First ensure sample products exist
+          const productRef = db.collection('products').doc('sample_product_id');
+          await productRef.set(sampleProduct);
+          
+          const accessoryRef = db.collection('products').doc('sample_accessory_id');
+          await accessoryRef.set({
+            name: "Fast Charging Cable",
+            description: "3-in-1 charging cable (Type-C, Micro-USB, Lightning)",
+            price: 800,
+            images: ["https://example.com/cable.jpg"],
+            active: true,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          
+          await collectionRef.add(sampleComplementary);
+        } else {
+          // Create empty collection with one dummy document
+          await collectionRef.add({
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            placeholder: true
+          });
+        }
+      }
+    }
+    
+    console.log("Firebase collections verified");
+  } catch (error) {
+    console.error("Error initializing collections:", error);
+  }
+}
+
+// Call this function right after admin.initializeApp
+initializeFirebaseCollections().catch(console.error);
+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
@@ -1231,3 +1314,4 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
+
