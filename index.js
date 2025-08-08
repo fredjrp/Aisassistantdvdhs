@@ -29,7 +29,8 @@ const {
   GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
   PUBLIC_KEY,
-  GOOGLE_PRIVATE_KEY
+  GOOGLE_PRIVATE_KEY,
+  PAYMENT_TILL_NUMBER
 } = process.env;
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
@@ -47,6 +48,7 @@ const transporter = nodemailer.createTransport({
 const AGENT_RESPONSE_TIMEOUT = 5000;
 const DEMO_DELAY = 2000;
 const agentResponseTimers = new Map();
+const TRIAL_DURATION_DAYS = 7;
 
 async function logMessage(direction, messageData) {
   try {
@@ -65,7 +67,7 @@ async function logMessage(direction, messageData) {
 
     await db.collection('whatsapp_logs').add(logData);
   } catch (err) {
-    console.error('❌ Failed to log message:', err);
+    console.error('Failed to log message:', err);
   }
 }
 
@@ -99,7 +101,7 @@ async function sendMessage(to, text, isAI = false) {
 
     return response;
   } catch (err) {
-    console.error('❌ Send message error:', err.response?.data || err.message);
+    console.error('Send message error:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -133,7 +135,44 @@ async function sendInteractiveMessage(to, interactiveData) {
 
     return response;
   } catch (err) {
-    console.error('❌ Interactive message error:', err.response?.data || err.message);
+    console.error('Interactive message error:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
+async function sendImageMessage(to, imageUrl, caption = '') {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'image',
+        image: {
+          link: imageUrl,
+          caption: caption
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+
+    await logMessage('outgoing', {
+      to,
+      from: PHONE_NUMBER_ID,
+      type: 'image',
+      message: { image: { link: imageUrl, caption: caption } },
+      messageId: response.data.messages?.[0]?.id
+    });
+
+    return response;
+  } catch (err) {
+    console.error('Image message error:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -141,7 +180,7 @@ async function sendInteractiveMessage(to, interactiveData) {
 async function updateGoogleSheet(userData) {
   try {
     if (!GOOGLE_SHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
-      console.log('⚠️ Google Sheets credentials missing - skipping update');
+      console.log('Google Sheets credentials missing - skipping update');
       return;
     }
 
@@ -161,14 +200,13 @@ async function updateGoogleSheet(userData) {
       'Timestamp': new Date().toISOString(),
       'Phone': userData.phone,
       'Name': userData.name || '',
-      'UserType': userData.userType || '',
-      'SchoolLevel': userData.schoolLevel || '',
-      'BusinessIndustry': userData.businessIndustry || '',
-      'Objective': userData.objective || '',
-      'DemoRating': userData.demoRating || '',
-      'BookedDemo': userData.bookedDemo || false,
-      'Stage': userData.onboarding?.stage || '',
-      'LastActive': new Date().toISOString()
+      'Status': userData.status || '',
+      'HouseNumber': userData.houseNumber || '',
+      'CurrentProduct': userData.currentTrialProduct || '',
+      'TrialStartDate': userData.trialStartDate || '',
+      'PaymentStatus': userData.paymentStatus || '',
+      'LoyaltyPoints': userData.loyaltyPoints || 0,
+      'CaseNumber': userData.caseNumber || ''
     };
 
     if (existingRow) {
@@ -180,43 +218,23 @@ async function updateGoogleSheet(userData) {
       await sheet.addRow(record);
     }
   } catch (err) {
-    console.error('❌ Google Sheets error:', err.message);
+    console.error('Google Sheets error:', err.message);
   }
 }
 
-async function setOnboardingTimeout(userId, hours = 24) {
-  const timeoutAt = new Date();
-  timeoutAt.setHours(timeoutAt.getHours() + hours);
-  
-  await db.collection('users').doc(userId).update({
-    'onboarding.timeoutAt': admin.firestore.Timestamp.fromDate(timeoutAt),
-    'onboarding.closed': true
-  });
-}
-
-async function getAIResponse(userText, userId) {
+async function getAIResponse(userText, userId, context = '') {
   const userRef = await db.collection('users').doc(userId).get();
   const userData = userRef.data() || {};
   
-  const personality = userData.userType === 'School' 
-    ? {
-        tone: "educational and concise",
-        traits: [
-          "Keep responses 100-300 characters",
-          "Use bullet points when listing items",
-          "Offer to continue via Fredsofficial.com if more detail needed",
-          "Always conclude with clear next steps"
-        ]
-      }
-    : {
-        tone: "business-oriented and concise",
-        traits: [
-          "Keep responses 100-300 characters",
-          "Focus on lead generation and sales",
-          "Provide concrete business examples",
-          "Emphasize automation and efficiency"
-        ]
-      };
+  const personality = {
+    tone: "professional and helpful",
+    traits: [
+      "Keep responses under 200 characters",
+      "Use bullet points when possible",
+      "Focus on product benefits and features",
+      "Provide clear next steps"
+    ]
+  };
 
   try {
     const res = await axios.post(
@@ -226,12 +244,14 @@ async function getAIResponse(userText, userId) {
         messages: [
           { 
             role: "system", 
-            content: `You are Fred's Official WhatsApp assistant. Be ${personality.tone}.\n` +
+            content: `You are Mountain View Electronics WhatsApp assistant. Be ${personality.tone}.\n` +
                      `${personality.traits.join('\n')}\n\n` +
                      `Current user context:\n` +
-                     `Name: ${userData.name || 'Unknown'}\n` +
-                     `Type: ${userData.userType || 'Unknown'}\n` +
-                     `Business/School: ${userData.businessIndustry || userData.schoolLevel || 'Unknown'}`
+                     `Name: ${userData.name || 'Customer'}\n` +
+                     `Status: ${userData.status || 'New'}\n` +
+                     `Product: ${userData.currentTrialProduct || 'None'}\n` +
+                     `Trial Day: ${getTrialDay(userData) || '0'}\n` +
+                     `${context}`
           },
           { role: "user", content: userText }
         ],
@@ -259,817 +279,650 @@ async function getAIResponse(userText, userId) {
 
     return response;
   } catch (err) {
-    console.error('❌ AI error:', err.response?.data || err.message);
-    return "🔧 My circuits are a bit busy! Try asking again or visit Fredsofficial.com";
+    console.error('AI error:', err.response?.data || err.message);
+    return "I'm having trouble responding. Please try again or visit our website for assistance.";
   }
 }
 
-async function startOnboarding(userId) {
-  await db.collection('users').doc(userId).set({
-    phone: userId,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    onboarding: {
-      stage: 'welcome',
-      closed: false,
-      lastActive: admin.firestore.FieldValue.serverTimestamp()
-    }
-  }, { merge: true });
-  await sendWelcomeMessage(userId);
+function getTrialDay(userData) {
+  if (!userData.trialStartDate) return 0;
+  const startDate = userData.trialStartDate.toDate();
+  const now = new Date();
+  const diffTime = Math.abs(now - startDate);
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
 async function sendWelcomeMessage(to) {
   const interactiveData = {
     type: 'button',
     body: {
-      text: "👋 Welcome to Fred's Official WhatsApp Automation Assistant 🌟\n\n" +
-            "To provide the best experience, we'll collect some information. " +
-            "Your data will only be used to personalize your experience."
+      text: "Welcome to Mountain View Electronics. Are you a Mountain View Estate resident?"
     },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'welcome_agree', title: 'Yes, I Agree' } },
-        { type: 'reply', reply: { id: 'welcome_later', title: 'Remind Me Later' } }
+        { type: 'reply', reply: { id: 'welcome_yes', title: 'Yes, I am a resident' } },
+        { type: 'reply', reply: { id: 'welcome_no', title: 'No, I am not' } }
       ]
     }
   };
   await sendInteractiveMessage(to, interactiveData);
 }
 
-async function sendUserTypeSelection(to) {
-  const interactiveData = {
-    type: 'button',
-    body: { text: "🔍 Are you a school or a business?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'userType_school', title: '🏫 School' } },
-        { type: 'reply', reply: { id: 'userType_business', title: '🏪 Business' } }
-      ]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function sendSchoolNameRequest(to) {
-  await sendMessage(to, "🏫 Please share your school's full name:");
-}
-
-async function sendSchoolLevelSelection(to) {
-  const interactiveData = {
-    type: 'list',
-    header: { type: 'text', text: '🎓 School Level' },
-    body: { text: 'Which level best describes your school?' },
-    action: {
-      button: 'Select Level',
-      sections: [{
-        title: 'School Levels',
-        rows: [
-          { id: 'schoolLevel_primary', title: 'Primary' },
-          { id: 'schoolLevel_secondary', title: 'Secondary' },
-          { id: 'schoolLevel_college', title: 'College' },
-          { id: 'schoolLevel_tvet', title: 'TVET' },
-          { id: 'schoolLevel_university', title: 'University' }
-        ]
-      }]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function sendSchoolDemoOptions(to, userName) {
-  await sendMessage(to, "📚 Here's how we help schools like yours:");
-  
-  const interactiveData = {
-    type: 'list',
-    header: { type: 'text', text: '🏫 School Automation Demo' },
-    body: { 
-      text: `${userName}, try these school communication tools:\n` +
-            "Tap to experience a simulation" 
-    },
-    action: {
-      button: 'View Demos',
-      sections: [{
-        title: 'School Tools',
-        rows: [
-          { id: 'demo_exam_alert', title: 'Exam Alert', description: 'Send to entire school' },
-          { id: 'demo_report_card', title: 'Report Cards', description: 'With parent feedback' },
-          { id: 'demo_event_reminder', title: 'Event Reminder', description: 'PTA meetings, etc' }
-        ]
-      }]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function runExamAlertDemo(to) {
-  await sendMessage(to, "📝 Setting up exam alert simulation...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Send exam timetable to:" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'exam_all', title: 'All Parents (300)' } },
-        { type: 'reply', reply: { id: 'exam_form4', title: 'Form 4 Only (45)' } }
-      ]
-    }
-  });
-}
-
-async function completeExamAlertDemo(to, choice) {
-  if (choice === 'exam_all') {
-    await sendMessage(to, "⏳ Sending to 300 parents...");
-    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-    await sendMessage(to, 
-      "✅ Sent successfully!\n\n" +
-      "Sample message:\n" +
-      "📅 FORM 1 EXAMS\n" +
-      "Mon: Math (8-10am)\n" +
-      "Tue: English (9-11am)\n" +
-      "Full timetable: bit.ly/greenhill-exams");
-  } else {
-    await sendMessage(to, "⏳ Sending to Form 4 parents...");
-    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-    await sendMessage(to, 
-      "✅ Sent to 45 parents!\n\n" +
-      "Sample message:\n" +
-      "📅 FORM 4 PRE-MOCKS\n" +
-      "Wed: Chemistry (10am-12pm)\n" +
-      "Thu: Physics (8-10am)");
-  }
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Would you like to test sending to another number?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'exam_test_number', title: 'Again' } },
-        { type: 'reply', reply: { id: 'exam_done', title: 'Continue' } }
-      ]
-    }
-  });
-}
-
-async function requestTestNumber(to, demoType) {
-  await sendMessage(to, `Please enter the phone number to test ${demoType} (format: 0700123456):`);
-}
-
-async function confirmTestNumber(to, number, demoType) {
-  await sendMessage(to, `⏳ Preparing to send ${demoType} demo to ${number}...`);
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  if (demoType === 'exam alert') {
-    await sendMessage(to, 
-      `📤 Sent exam alert demo to ${number}:\n\n` +
-      "Sample exam timetable attached\n" +
-      "View full demo at Fredsofficial.com/demo");
-  } else if (demoType === 'report card') {
-    await sendMessage(to,
-      `📤 Sent report card demo to ${number}:\n\n` +
-      "📝 Term 3 Report Card\n" +
-      "Math: A\nEnglish: B+\n" +
-      "View full demo at Fredsofficial.com/demo");
-  }
-}
-
-async function runReportCardDemo(to) {
-  await sendMessage(to, "📊 Generating sample report card...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendMessage(to,
-    "📝 STUDENT REPORT - TERM 3\n" +
-    "Name: Maria Kamau\n" +
-    "Class: Form 2 East\n\n" +
-    "Math: A\n" +
-    "English: B+\n" +
-    "Science: A-\n" +
-    "Comments: Excellent progress in STEM subjects");
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Include parent feedback request?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'report_yes', title: 'Yes, Add Feedback' } },
-        { type: 'reply', reply: { id: 'report_no', title: 'Send As Is' } }
-      ]
-    }
-  });
-}
-
-async function completeReportCardDemo(to, includeFeedback) {
-  if (includeFeedback === 'report_yes') {
-    await sendMessage(to, "⏳ Adding feedback section...");
-    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-    await sendMessage(to,
-      "✅ Report card ready with feedback request!\n\n" +
-      "Sample message to parents:\n" +
-      "Please reply with:\n" +
-      "1 - Satisfied\n" +
-      "2 - Needs improvement\n" +
-      "3 - Request meeting");
-  } else {
-    await sendMessage(to, "⏳ Sending report card...");
-    await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-    await sendMessage(to, "✅ Report card sent to parents!");
-  }
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Test sending to another number?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'report_test_number', title: 'Another' } },
-        { type: 'reply', reply: { id: 'report_done', title: 'Continue' } }
-      ]
-    }
-  });
-}
-
-async function runEventReminderDemo(to) {
-  await sendMessage(to, "📅 Setting up event reminder...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendInteractiveMessage(to, {
-    type: 'list',
-    header: { type: 'text', text: '🏫 School Event Reminder' },
-    body: { text: 'Select event type:' },
-    action: {
-      button: 'Select',
-      sections: [{
-        title: 'Event Types',
-        rows: [
-          { id: 'event_pta', title: 'PTA Meeting' },
-          { id: 'event_sports', title: 'Sports Day' },
-          { id: 'event_trip', title: 'School Trip' }
-        ]
-      }]
-    }
-  });
-}
-
-async function completeEventReminderDemo(to, eventType) {
-  let eventName = '';
-  if (eventType === 'event_pta') eventName = 'PTA Meeting';
-  else if (eventType === 'event_sports') eventName = 'Sports Day';
-  else eventName = 'School Trip';
-  
-  await sendMessage(to, `⏳ Creating ${eventName} reminder...`);
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendMessage(to,
-    `✅ ${eventName} Reminder Ready!\n\n` +
-    "Sample message:\n" +
-    `📢 ${eventName} Alert\n` +
-    `Date: ${new Date(Date.now() + 86400000 * 7).toLocaleDateString()}\n` +
-    "Details: bit.ly/greenhill-events");
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Test sending to another number?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'event_test_number', title: 'Another' } },
-        { type: 'reply', reply: { id: 'event_done', title: 'Continue' } }
-      ]
-    }
-  });
-}
-
-async function sendBusinessNameRequest(to) {
-  await sendMessage(to, "🏢 Please share your business name:");
-}
-
-async function sendBusinessIndustrySelection(to) {
-  const interactiveData = {
-    type: 'list',
-    header: { type: 'text', text: '🏢 Business Industry' },
-    body: { text: 'Which industry best describes your business?' },
-    action: {
-      button: 'Select Industry',
-      sections: [{
-        title: 'Industries',
-        rows: [
-          { id: 'industry_retail', title: 'Retail' },
-          { id: 'industry_service', title: 'Service' },
-          { id: 'industry_hospitality', title: 'Hospitality' },
-          { id: 'industry_freelance', title: 'Freelance' },
-          { id: 'industry_other', title: 'Other' }
-        ]
-      }]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function sendBusinessObjectiveSelection(to) {
-  const interactiveData = {
-    type: 'button',
-    body: { text: "What's your primary objective for using our services?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'objective_lead', title: 'Lead Capture' } },
-        { type: 'reply', reply: { id: 'objective_support', title: 'Client Support' } },
-        { type: 'reply', reply: { id: 'objective_both', title: 'Both' } }
-      ]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function sendBusinessDemoOptions(to, userName, businessType) {
-  await sendMessage(to, "🛍️ Here's our product catalog:");
-  await sendMessage(to, "Image: [Mock product catalog image]");
-  
-  const interactiveData = {
-    type: 'list',
-    header: { type: 'text', text: '🧲 Business Solutions' },
-    body: { 
-      text: `${userName}, try these ${businessType} business tools:\n` +
-            "Tap to experience a simulation" 
-    },
-    action: {
-      button: 'View Demos',
-      sections: [{
-        title: 'Business Tools',
-        rows: [
-          { id: 'demo_ad_leads', title: 'Ad Lead Capture', description: 'From social media ads' },
-          { id: 'demo_autoresponder', title: 'Autoresponder', description: 'Instant replies 24/7' },
-          { id: 'demo_crm_tagging', title: 'CRM Tagging', description: 'Organize clients' }
-        ]
-      }]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function runAdLeadDemo(to) {
-  await sendMessage(to, "🔍 Simulating ad lead capture...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { 
-      text: "A customer clicked your Facebook ad:\n" +
-            "'Learn About Premium Plan'" 
-    },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'lead_capture', title: 'Capture Lead' } }
-      ]
-    }
-  });
-}
-
-async function completeAdLeadDemo(to) {
-  await sendMessage(to, "⏳ Creating lead in CRM...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendMessage(to,
-    "✅ Lead Captured!\n" +
-    "Name: John Doe\n" +
-    "Interest: Premium Plan\n" +
-    "Phone: +2547******");
-  
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  await sendMessage(to,
-    "🤖 Auto-responder sequence started:\n\n" +
-    "1. Instant reply sent:\n" +
-    "'Thanks for your interest John! Here's our Premium Plan brochure: link.com'\n\n" +
-    "2. Follow-up in 24h:\n" +
-    "'Did you get a chance to review the Premium Plan details?'");
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Test sending to another number?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'lead_test_number', title: 'Another' } },
-        { type: 'reply', reply: { id: 'lead_done', title: 'Continue' } }
-      ]
-    }
-  });
-}
-
-async function runAutoresponderDemo(to) {
-  await sendMessage(to, "🤖 Setting up auto-responder...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendInteractiveMessage(to, {
-    type: 'list',
-    header: { type: 'text', text: '⏰ Auto-responder Triggers' },
-    body: { text: 'Select when to respond automatically:' },
-    action: {
-      button: 'Select',
-      sections: [{
-        title: 'Triggers',
-        rows: [
-          { id: 'auto_keyword', title: 'Keyword Detection' },
-          { id: 'auto_hours', title: 'After Hours' },
-          { id: 'auto_all', title: 'All Messages' }
-        ]
-      }]
-    }
-  });
-}
-
-async function completeAutoresponderDemo(to, triggerType) {
-  let triggerName = '';
-  if (triggerType === 'auto_keyword') triggerName = 'keyword detection';
-  else if (triggerType === 'auto_hours') triggerName = 'after hours';
-  else triggerName = 'all messages';
-  
-  await sendMessage(to, `⏳ Configuring ${triggerName} responder...`);
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendMessage(to,
-    `✅ ${triggerName.charAt(0).toUpperCase() + triggerName.slice(1)} responder active!\n\n` +
-    "Sample triggered response:\n" +
-    "Thanks for your message! Our team will respond within 24 hours. " +
-    "For urgent inquiries, call 0700123456.");
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Test sending to another number?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'auto_test_number', title: 'Another' } },
-        { type: 'reply', reply: { id: 'auto_done', title: 'Continue' } }
-      ]
-    }
-  });
-}
-
-async function runCRMTaggingDemo(to) {
-  await sendMessage(to, "🏷️ Simulating CRM tagging...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendInteractiveMessage(to, {
-    type: 'list',
-    header: { type: 'text', text: '📌 Tag This Lead' },
-    body: { text: 'New lead from website contact form:' },
-    action: {
-      button: 'Select Tags',
-      sections: [{
-        title: 'Tags',
-        rows: [
-          { id: 'tag_hot', title: '🔥 Hot Lead' },
-          { id: 'tag_edu', title: '🎓 Education Sector' },
-          { id: 'tag_follow', title: '🔄 Follow-up Tomorrow' }
-        ]
-      }]
-    }
-  });
-}
-
-async function completeCRMTaggingDemo(to) {
-  await sendMessage(to, "⏳ Updating CRM records...");
-  await new Promise(resolve => setTimeout(resolve, DEMO_DELAY));
-  
-  await sendMessage(to,
-    "✅ Lead tagged successfully!\n\n" +
-    "Tags applied:\n" +
-    "• 🔥 Hot Lead\n" +
-    "• 🎓 Education Sector\n" +
-    "• 🔄 Follow-up Tomorrow");
-  
-  await sendInteractiveMessage(to, {
-    type: 'button',
-    body: { text: "Test sending to another number?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'crm_test_number', title: 'Another' } },
-        { type: 'reply', reply: { id: 'crm_done', title: 'Continue' } }
-      ]
-    }
-  });
-}
-
-async function sendDemoTestimonial(to, userType) {
-  if (userType === 'School') {
-    await sendMessage(to, 
-      "📣 'As a head teacher, I can now reach 300 parents instantly. " +
-      "It's a game-changer!' – Mr. Kamau, Greenhill Academy");
-  } else {
-    await sendMessage(to, 
-      "💬 'I run ads at night, and by morning 80 leads were already " +
-      "tagged and followed up.' – Faith, Salon Owner");
-  }
-}
-
-async function sendRatingRequest(to) {
-  const interactiveData = {
-    type: 'button',
-    body: { text: "⭐ How helpful was this demonstration?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'rating_1', title: '⭐ 1' } },
-        { type: 'reply', reply: { id: 'rating_3', title: '⭐⭐⭐ 3' } },
-        { type: 'reply', reply: { id: 'rating_5', title: '⭐⭐⭐⭐⭐ 5' } }
-      ]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function sendDemoBookingCTA(to, userType) {
-  const calendarLink = "https://calendly.com/fredsofficial/demo";
-  if (userType === 'School') {
-    await sendMessage(to, `📅 Book a Free Demo Call: ${calendarLink}`);
-  } else {
-    await sendMessage(to, `🚀 Schedule a Demo to Automate Your Sales: ${calendarLink}`);
-  }
-}
-
-async function sendFinalReview(to, userData) {
-  let summary = "📋 Here's what we've collected:\n\n";
-  
-  if (userData.userType === 'School') {
-    summary += `Name: ${userData.name}\n`;
-    summary += `Type: School\n`;
-    summary += `School: ${userData.schoolName}\n`;
-    summary += `Level: ${userData.schoolLevel}\n`;
-  } else {
-    summary += `Name: ${userData.name}\n`;
-    summary += `Type: Business\n`;
-    summary += `Industry: ${userData.businessIndustry}\n`;
-    summary += `Objective: ${userData.objective}\n`;
-  }
-  
-  if (userData.demoRating) {
-    summary += `Demo Rating: ${'⭐'.repeat(userData.demoRating)}\n`;
-  }
-  
-  summary += `\nWould you like to save and continue later or talk to a human agent?`;
-
-  const interactiveData = {
-    type: 'button',
-    body: { text: summary },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'final_continue', title: 'Continue' } },
-        { type: 'reply', reply: { id: 'final_agent', title: 'Talk to Agent' } }
-      ]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function sendMenuOptions(to) {
-  const interactiveData = {
-    type: 'button',
-    body: { text: "Would you like to resume where you left off or start over?" },
-    action: {
-      buttons: [
-        { type: 'reply', reply: { id: 'menu_resume', title: 'Resume' } },
-        { type: 'reply', reply: { id: 'menu_restart', title: 'Start Fresh' } },
-        { type: 'reply', reply: { id: 'menu_agent', title: 'Talk to Agent' } }
-      ]
-    }
-  };
-  await sendInteractiveMessage(to, interactiveData);
-}
-
-async function handleOnboardingStage(from, text, stage, userRef, userData) {
-  const updateData = {};
-  let nextStage = stage;
-
+async function sendProductCatalog(to) {
   try {
-    switch (stage) {
-      case 'welcome':
-        if (text === 'welcome_agree') {
-          nextStage = 'user_type';
-          await sendUserTypeSelection(from);
-        } else if (text === 'welcome_later') {
-          await setOnboardingTimeout(from);
-          await sendMessage(from, "No problem! We'll remind you in 24 hours. Type 'menu' anytime to begin.");
-          return;
-        } else {
-          await sendWelcomeMessage(from);
-          return;
-        }
-        break;
+    const productsSnapshot = await db.collection('products').where('active', '==', true).get();
+    const products = [];
+    
+    productsSnapshot.forEach(doc => {
+      products.push({ id: doc.id, ...doc.data() });
+    });
 
-      case 'user_type':
-        if (text === 'userType_school') {
-          updateData.userType = 'School';
-          nextStage = 'name';
-          await sendMessage(from, "Great! What's your full name?");
-        } else if (text === 'userType_business') {
-          updateData.userType = 'Business';
-          nextStage = 'name';
-          await sendMessage(from, "Great! What's your full name?");
-        } else {
-          await sendUserTypeSelection(from);
-          return;
-        }
-        break;
+    if (products.length === 0) {
+      await sendMessage(to, "Currently no products available. Please check back later.");
+      return;
+    }
 
-      case 'name':
-        if (text && text.length >= 2) {
-          updateData.name = text;
-          if (userData.userType === 'School') {
-            nextStage = 'school_name';
-            await sendSchoolNameRequest(from);
-          } else {
-            nextStage = 'business_industry';
-            await sendBusinessIndustrySelection(from);
-          }
-        } else {
-          await sendMessage(from, "❌ Please provide a valid name (at least 2 characters)");
-          return;
-        }
-        break;
+    // For first product, send image with details
+    const firstProduct = products[0];
+    if (firstProduct.images && firstProduct.images.length > 0) {
+      await sendImageMessage(to, firstProduct.images[0], 
+        `${firstProduct.name}\n${firstProduct.description}\nPrice: KES ${firstProduct.price}`);
+    }
 
-      case 'school_name':
-        if (text && text.length >= 2) {
-          updateData.schoolName = text;
-          nextStage = 'school_level';
-          await sendSchoolLevelSelection(from);
-        } else {
-          await sendMessage(from, "❌ Please provide a valid school name");
-          return;
-        }
-        break;
+    const remainingProducts = products.slice(1);
+    if (remainingProducts.length > 0) {
+      const sections = [{
+        title: 'Available Products',
+        rows: remainingProducts.map(product => ({
+          id: `product_${product.id}`,
+          title: product.name,
+          description: `KES ${product.price}`
+        }))
+      }];
 
-      case 'school_level':
-        if (text && text.startsWith('schoolLevel_')) {
-          updateData.schoolLevel = text.replace('schoolLevel_', '');
-          nextStage = 'school_demo';
-          await sendSchoolDemoOptions(from, userData.name);
-        } else {
-          await sendSchoolLevelSelection(from);
-          return;
+      const interactiveData = {
+        type: 'list',
+        header: { type: 'text', text: 'Our Products' },
+        body: { text: 'Select a product to view details:' },
+        action: {
+          button: 'View Products',
+          sections: sections
         }
-        break;
+      };
 
-      case 'school_demo':
-        if (text === 'demo_exam_alert') {
-          await runExamAlertDemo(from);
-          return;
-        } else if (text === 'demo_report_card') {
-          await runReportCardDemo(from);
-          return;
-        } else if (text === 'demo_event_reminder') {
-          await runEventReminderDemo(from);
-          return;
-        } else if (text === 'exam_all' || text === 'exam_form4') {
-          await completeExamAlertDemo(from, text);
-          return;
-        } else if (text === 'report_yes' || text === 'report_no') {
-          await completeReportCardDemo(from, text);
-          return;
-        } else if (text.startsWith('event_')) {
-          await completeEventReminderDemo(from, text);
-          return;
-        } else if (text === 'exam_test_number') {
-          await requestTestNumber(from, 'exam alert');
-          return;
-        } else if (text === 'report_test_number') {
-          await requestTestNumber(from, 'report card');
-          return;
-        } else if (text === 'event_test_number') {
-          await requestTestNumber(from, 'event reminder');
-          return;
-        } else if (/^\d{10}$/.test(text)) {
-          await confirmTestNumber(from, text, userData.demoType || 'demo');
-          return;
-        } else if (text.endsWith('_done')) {
-          nextStage = 'demo_testimonial';
-          await sendDemoTestimonial(from, userData.userType);
-          await sendRatingRequest(from);
-        } else {
-          await sendSchoolDemoOptions(from, userData.name);
-          return;
+      await sendInteractiveMessage(to, interactiveData);
+    }
+  } catch (err) {
+    console.error('Product catalog error:', err);
+    await sendMessage(to, "Failed to load products. Please try again later.");
+  }
+}
+
+async function sendProductDetails(to, productId) {
+  try {
+    const productDoc = await db.collection('products').doc(productId).get();
+    if (!productDoc.exists) {
+      await sendMessage(to, "Product not found.");
+      return;
+    }
+
+    const product = productDoc.data();
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.data() || {};
+
+    if (product.images && product.images.length > 0) {
+      await sendImageMessage(to, product.images[0], 
+        `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
+    }
+
+    if (userData.isEstateResident) {
+      const interactiveData = {
+        type: 'button',
+        body: {
+          text: `${product.name}\n\n${product.description}\n\nPrice: KES ${product.price}\n\nAs a Mountain View resident, you qualify for a 1-week free trial.`
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: `book_${productId}`, title: 'Book Free Trial' } },
+            { type: 'reply', reply: { id: 'back_catalog', title: 'Back to Catalog' } }
+          ]
         }
-        break;
-
-      case 'business_industry':
-        if (text && text.startsWith('industry_')) {
-          updateData.businessIndustry = text.replace('industry_', '');
-          nextStage = 'business_objective';
-          await sendBusinessObjectiveSelection(from);
-        } else {
-          await sendBusinessIndustrySelection(from);
-          return;
+      };
+      await sendInteractiveMessage(to, interactiveData);
+    } else {
+      const interactiveData = {
+        type: 'button',
+        body: {
+          text: `${product.name}\n\n${product.description}\n\nPrice: KES ${product.price}\n\nPayment required upfront for non-residents.`
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
+            { type: 'reply', reply: { id: 'back_catalog', title: 'Back to Catalog' } }
+          ]
         }
-        break;
+      };
+      await sendInteractiveMessage(to, interactiveData);
+    }
+  } catch (err) {
+    console.error('Product details error:', err);
+    await sendMessage(to, "Failed to load product details. Please try again later.");
+  }
+}
 
-      case 'business_objective':
-        if (text && text.startsWith('objective_')) {
-          updateData.objective = text.replace('objective_', '');
-          nextStage = 'business_demo';
-          await sendBusinessDemoOptions(from, userData.name, userData.businessIndustry);
-        } else {
-          await sendBusinessObjectiveSelection(from);
-          return;
+async function requestDeliveryDetails(to, productId, isTrial = true) {
+  try {
+    // First request house number for residents
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.data() || {};
+
+    if (userData.isEstateResident && !userData.houseNumber) {
+      await sendMessage(to, "Please provide your Mountain View Estate house number (e.g., B42):");
+      await db.collection('users').doc(to).update({
+        onboarding: {
+          stage: 'house_number',
+          productId: productId,
+          isTrial: isTrial
         }
-        break;
+      });
+      return;
+    }
 
-      case 'business_demo':
-        if (text === 'demo_ad_leads') {
-          await runAdLeadDemo(from);
-          return;
-        } else if (text === 'demo_autoresponder') {
-          await runAutoresponderDemo(from);
-          return;
-        } else if (text === 'demo_crm_tagging') {
-          await runCRMTaggingDemo(from);
-          return;
-        } else if (text === 'lead_capture') {
-          await completeAdLeadDemo(from);
-          return;
-        } else if (text.startsWith('auto_')) {
-          await completeAutoresponderDemo(from, text);
-          return;
-        } else if (text === 'lead_test_number') {
-          await requestTestNumber(from, 'lead capture');
-          return;
-        } else if (text === 'auto_test_number') {
-          await requestTestNumber(from, 'auto-responder');
-          return;
-        } else if (text === 'crm_test_number') {
-          await requestTestNumber(from, 'CRM tagging');
-          return;
-        } else if (/^\d{10}$/.test(text)) {
-          await confirmTestNumber(from, text, userData.demoType || 'demo');
-          return;
-        } else if (text.endsWith('_done')) {
-          nextStage = 'demo_testimonial';
-          await sendDemoTestimonial(from, userData.userType);
-          await sendRatingRequest(from);
-        } else {
-          await sendBusinessDemoOptions(from, userData.name, userData.businessIndustry);
-          return;
+    // Then request date
+    await sendMessage(to, "Please enter your preferred delivery date (DD-MM-YYYY):");
+    await db.collection('users').doc(to).update({
+      onboarding: {
+        stage: 'delivery_date',
+        productId: productId,
+        isTrial: isTrial
+      }
+    });
+  } catch (err) {
+    console.error('Delivery details error:', err);
+    await sendMessage(to, "Failed to process delivery request. Please try again later.");
+  }
+}
+
+async function requestDeliveryTime(to, productId, deliveryDate, isTrial) {
+  try {
+    const interactiveData = {
+      type: 'button',
+      body: {
+        text: `Please select delivery time for ${deliveryDate}:`
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: `time_morning_${productId}`, title: 'Morning (8am-12pm)' } },
+          { type: 'reply', reply: { id: `time_afternoon_${productId}`, title: 'Afternoon (12pm-4pm)' } },
+          { type: 'reply', reply: { id: `time_evening_${productId}`, title: 'Evening (4pm-8pm)' } }
+        ]
+      }
+    };
+    
+    await sendInteractiveMessage(to, interactiveData);
+    await db.collection('users').doc(to).update({
+      onboarding: {
+        stage: 'delivery_time',
+        productId: productId,
+        deliveryDate: deliveryDate,
+        isTrial: isTrial
+      }
+    });
+  } catch (err) {
+    console.error('Delivery time error:', err);
+    await sendMessage(to, "Failed to process delivery time. Please try again later.");
+  }
+}
+
+async function confirmOrder(to, productId, deliveryDate, timeSlot, isTrial) {
+  try {
+    const productDoc = await db.collection('products').doc(productId).get();
+    if (!productDoc.exists) {
+      await sendMessage(to, "Product no longer available.");
+      return;
+    }
+
+    const product = productDoc.data();
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.data() || {};
+
+    let message = `Order Summary:\n\n`;
+    message += `Product: ${product.name}\n`;
+    message += `Delivery Date: ${deliveryDate}\n`;
+    message += `Time Slot: ${timeSlot}\n`;
+    
+    if (userData.houseNumber) {
+      message += `House Number: ${userData.houseNumber}\n`;
+    }
+
+    if (isTrial) {
+      message += `\nYou have a 1-week free trial period. Payment of KES ${product.price} will be requested after trial.`;
+      
+      const interactiveData = {
+        type: 'button',
+        body: {
+          text: message
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: `confirm_trial_${productId}`, title: 'Confirm Trial' } },
+            { type: 'reply', reply: { id: 'cancel_order', title: 'Cancel' } }
+          ]
         }
-        break;
+      };
+      
+      await sendInteractiveMessage(to, interactiveData);
+    } else {
+      message += `\nTotal: KES ${product.price}\n\nPlease pay to Till Number ${PAYMENT_TILL_NUMBER} and send receipt.`;
+      
+      const interactiveData = {
+        type: 'button',
+        body: {
+          text: message
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: `confirm_payment_${productId}`, title: 'I Have Paid' } },
+            { type: 'reply', reply: { id: 'cancel_order', title: 'Cancel' } }
+          ]
+        }
+      };
+      
+      await sendInteractiveMessage(to, interactiveData);
+    }
 
-      case 'demo_testimonial':
-        if (text && text.startsWith('rating_')) {
-          updateData.demoRating = parseInt(text.replace('rating_', ''));
-          nextStage = 'demo_booking';
-          await sendDemoBookingCTA(from, userData.userType);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          await sendFinalReview(from, {
-            ...userData,
-            demoRating: parseInt(text.replace('rating_', ''))
+    await db.collection('users').doc(to).update({
+      onboarding: {
+        stage: 'order_confirmation',
+        productId: productId,
+        deliveryDate: deliveryDate,
+        timeSlot: timeSlot,
+        isTrial: isTrial
+      }
+    });
+  } catch (err) {
+    console.error('Order confirmation error:', err);
+    await sendMessage(to, "Failed to process order. Please try again later.");
+  }
+}
+
+async function startTrialPeriod(to, productId, deliveryDate, timeSlot) {
+  try {
+    const trialEndDate = new Date();
+    trialEndDate.setDate(trialEndDate.getDate() + TRIAL_DURATION_DAYS);
+
+    await db.collection('users').doc(to).update({
+      status: 'trial',
+      currentTrialProduct: productId,
+      trialStartDate: admin.firestore.FieldValue.serverTimestamp(),
+      trialEndDate: admin.firestore.Timestamp.fromDate(trialEndDate),
+      'onboarding.stage': 'trial_active'
+    });
+
+    await db.collection('orders').add({
+      userId: to,
+      productId: productId,
+      deliveryDate: deliveryDate,
+      deliverySlot: timeSlot,
+      status: 'pending',
+      isTrial: true,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await sendMessage(to, `Your 1-week trial for ${productId} starts upon delivery. We'll check in during your trial period.`);
+
+    // Schedule check-ins
+    scheduleTrialCheckins(to);
+  } catch (err) {
+    console.error('Trial start error:', err);
+    await sendMessage(to, "Failed to start trial period. Please contact support.");
+  }
+}
+
+async function scheduleTrialCheckins(userId) {
+  const checkinIntervals = [
+    { hours: 3 },    // 3 hours after delivery
+    { hours: 24 },   // 1 day after
+    { days: 3 },     // 3 days after
+    { days: 5 },     // 5 days after
+    { days: 7 }      // 7 days after (trial end)
+  ];
+
+  for (const interval of checkinIntervals) {
+    const delay = interval.hours 
+      ? interval.hours * 60 * 60 * 1000 
+      : interval.days * 24 * 60 * 60 * 1000;
+
+    setTimeout(async () => {
+      const userDoc = await db.collection('users').doc(userId).get();
+      const userData = userDoc.data() || {};
+
+      if (userData.status === 'trial') {
+        await sendTrialCheckin(userId, userData);
+      }
+    }, delay);
+  }
+}
+
+async function sendTrialCheckin(userId, userData) {
+  try {
+    const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
+    const product = productDoc.data() || {};
+    const trialDay = getTrialDay(userData);
+
+    let message = '';
+    if (trialDay === 0) {
+      message = `How is your first impression of the ${product.name}?`;
+    } else if (trialDay < TRIAL_DURATION_DAYS) {
+      message = `Day ${trialDay} of your trial. How is the ${product.name} working for you?`;
+    } else {
+      message = `Your trial period has ended. Would you like to purchase the ${product.name}?`;
+    }
+
+    // Get product tips from AI
+    const tipsContext = `Generate 1-2 short bullet points about using ${product.name} (${product.description}). Focus on helpful tips for day ${trialDay} of use.`;
+    const productTips = await getAIResponse('', userId, tipsContext);
+
+    // Get complementary products
+    const compProducts = await getComplementaryProducts(userData.currentTrialProduct);
+
+    let fullMessage = `${message}\n\n`;
+    fullMessage += `Product Tips:\n${productTips}\n\n`;
+
+    if (compProducts.length > 0) {
+      fullMessage += `Recommended Accessories:\n`;
+      compProducts.forEach(p => {
+        fullMessage += `- ${p.name} (KES ${p.price})\n`;
+      });
+    }
+
+    if (trialDay >= TRIAL_DURATION_DAYS) {
+      const interactiveData = {
+        type: 'button',
+        body: {
+          text: fullMessage
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'purchase_product', title: 'Purchase Now' } },
+            { type: 'reply', reply: { id: 'return_product', title: 'Return Product' } }
+          ]
+        }
+      };
+      await sendInteractiveMessage(userId, interactiveData);
+    } else {
+      const interactiveData = {
+        type: 'button',
+        body: {
+          text: fullMessage
+        },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'checkin_good', title: 'Working Well' } },
+            { type: 'reply', reply: { id: 'checkin_issues', title: 'Having Issues' } }
+          ]
+        }
+      };
+      await sendInteractiveMessage(userId, interactiveData);
+    }
+  } catch (err) {
+    console.error('Trial checkin error:', err);
+  }
+}
+
+async function getComplementaryProducts(mainProductId) {
+  try {
+    const compProducts = [];
+    const compSnapshot = await db.collection('complementary_products')
+      .where('mainProduct', '==', mainProductId)
+      .limit(3)
+      .get();
+
+    for (const doc of compSnapshot.docs) {
+      const productId = doc.data().complementaryProduct;
+      const productDoc = await db.collection('products').doc(productId).get();
+      if (productDoc.exists) {
+        compProducts.push({ id: productId, ...productDoc.data() });
+      }
+    }
+
+    return compProducts;
+  } catch (err) {
+    console.error('Complementary products error:', err);
+    return [];
+  }
+}
+
+async function requestPayment(to) {
+  try {
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.data() || {};
+    const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
+    const product = productDoc.data() || {};
+
+    let message = `Payment Request\n\n`;
+    message += `Product: ${product.name}\n`;
+    message += `Amount: KES ${product.price}\n\n`;
+    message += `Please pay to Till Number ${PAYMENT_TILL_NUMBER}\n`;
+    message += `Include your phone number as reference\n\n`;
+    message += `Complete your purchase to continue enjoying your product.`;
+
+    const interactiveData = {
+      type: 'button',
+      body: {
+        text: message
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'payment_done', title: 'I Have Paid' } },
+          { type: 'reply', reply: { id: 'payment_help', title: 'Need Help' } }
+        ]
+      }
+    };
+
+    await sendInteractiveMessage(to, interactiveData);
+  } catch (err) {
+    console.error('Payment request error:', err);
+    await sendMessage(to, "Failed to process payment request. Please try again later.");
+  }
+}
+
+async function verifyPayment(to, paymentDetails) {
+  try {
+    // In a real implementation, you would verify with your payment provider
+    // For this example, we'll simulate verification
+    
+    await db.collection('users').doc(to).update({
+      paymentStatus: 'completed',
+      status: 'customer',
+      loyaltyPoints: admin.firestore.FieldValue.increment(10)
+    });
+
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.data() || {};
+
+    await db.collection('orders').where('userId', '==', to)
+      .where('isTrial', '==', true)
+      .where('status', '==', 'pending')
+      .limit(1)
+      .get()
+      .then(async snapshot => {
+        if (!snapshot.empty) {
+          await snapshot.docs[0].ref.update({
+            status: 'completed',
+            paymentDate: admin.firestore.FieldValue.serverTimestamp(),
+            amount: paymentDetails.amount
           });
-        } else {
-          await sendRatingRequest(from);
-          return;
         }
-        break;
+      });
 
-      case 'demo_booking':
-        if (text === 'final_continue') {
-          updateData['onboarding.completed'] = true;
-          updateData['onboarding.completedAt'] = admin.firestore.FieldValue.serverTimestamp();
-          await sendMessage(from, "🎉 Thank you for completing the onboarding! Type 'menu' anytime to access these options again.");
-        } else if (text === 'final_agent') {
-          updateData.requiresAgent = true;
-          updateData.agentRequestedAt = admin.firestore.FieldValue.serverTimestamp();
-          await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
-          
-          agentResponseTimers.set(from, setTimeout(async () => {
-            const currentUserData = (await db.collection('users').doc(from).get()).data();
-            if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
-              await sendMessage(from, "Our agents are currently busy. Let me help you instead!");
-              const aiResponse = await getAIResponse(text, from);
-              await sendMessage(from, aiResponse);
-              await db.collection('users').doc(from).update({
-                aiEnabled: true,
-                requiresAgent: false
-              });
-            }
-          }, AGENT_RESPONSE_TIMEOUT));
-        } else {
-          await sendFinalReview(from, userData);
-          return;
+    let message = `Payment Verified!\n\n`;
+    message += `Thank you for your purchase.\n`;
+    message += `You've earned 10 loyalty points.\n\n`;
+    message += `Current points: ${userData.loyaltyPoints || 0}\n\n`;
+    message += `Would you like to leave feedback for a 5% discount on your next purchase?`;
+
+    const interactiveData = {
+      type: 'button',
+      body: {
+        text: message
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'feedback_yes', title: 'Leave Feedback' } },
+          { type: 'reply', reply: { id: 'feedback_later', title: 'Maybe Later' } }
+        ]
+      }
+    };
+
+    await sendInteractiveMessage(to, interactiveData);
+
+    // Schedule follow-ups
+    schedulePostPurchaseFollowups(to);
+  } catch (err) {
+    console.error('Payment verification error:', err);
+    await sendMessage(to, "Failed to verify payment. Please contact support.");
+  }
+}
+
+async function schedulePostPurchaseFollowups(userId) {
+  const followupIntervals = [
+    { days: 3 },    // 3 days after purchase
+    { days: 7 },    // 1 week after
+    { days: 30 }    // 1 month after
+  ];
+
+  for (const interval of followupIntervals) {
+    const delay = interval.days * 24 * 60 * 60 * 1000;
+
+    setTimeout(async () => {
+      const userDoc = await db.collection('users').doc(userId).get();
+      const userData = userDoc.data() || {};
+
+      if (userData.status === 'customer') {
+        await sendFollowupMessage(userId, userData, interval.days);
+      }
+    }, delay);
+  }
+}
+
+async function sendFollowupMessage(userId, userData, daysSincePurchase) {
+  try {
+    let message = `Hello ${userData.name || ''},\n\n`;
+    
+    if (daysSincePurchase === 3) {
+      message += `How is your new product working for you after 3 days of use?`;
+    } else if (daysSincePurchase === 7) {
+      message += `It's been a week since your purchase. Everything working well?`;
+    } else {
+      message += `It's been a month since your purchase. Would you like to check out our latest products?`;
+    }
+
+    const interactiveData = {
+      type: 'button',
+      body: {
+        text: message
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'followup_ok', title: 'All Good' } },
+          { type: 'reply', reply: { id: 'followup_issues', title: 'Having Issues' } },
+          { type: 'reply', reply: { id: 'followup_products', title: 'See Products' } }
+        ]
+      }
+    };
+
+    await sendInteractiveMessage(userId, interactiveData);
+  } catch (err) {
+    console.error('Followup message error:', err);
+  }
+}
+
+async function createCase(userId, issueType) {
+  try {
+    const caseNumber = `CASE-${Math.floor(1000 + Math.random() * 9000)}`;
+    
+    await db.collection('cases').add({
+      caseNumber: caseNumber,
+      userId: userId,
+      issueType: issueType,
+      status: 'open',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await db.collection('users').doc(userId).update({
+      caseNumber: caseNumber
+    });
+
+    await sendMessage(userId, `Case created: ${caseNumber}\n\nAn agent will contact you shortly.`);
+
+    // Assign to available agent
+    assignCaseToAgent(caseNumber);
+  } catch (err) {
+    console.error('Case creation error:', err);
+    await sendMessage(userId, "Failed to create case. Please try again later.");
+  }
+}
+
+async function assignCaseToAgent(caseNumber) {
+  // Implementation would depend on your agent assignment logic
+  // This is a simplified version
+  const agentsSnapshot = await db.collection('agents')
+    .where('available', '==', true)
+    .limit(1)
+    .get();
+
+  if (!agentsSnapshot.empty) {
+    const agent = agentsSnapshot.docs[0];
+    await agent.ref.update({ available: false });
+    
+    await db.collection('cases').where('caseNumber', '==', caseNumber)
+      .limit(1)
+      .get()
+      .then(async snapshot => {
+        if (!snapshot.empty) {
+          await snapshot.docs[0].ref.update({
+            assignedAgent: agent.id,
+            status: 'in-progress'
+          });
         }
-        break;
+      });
+  }
+}
 
+async function updateDeliveryStatus(orderId, status) {
+  try {
+    const orderDoc = await db.collection('orders').doc(orderId).get();
+    if (!orderDoc.exists) return;
+
+    await orderDoc.ref.update({ status: status });
+    
+    const userId = orderDoc.data().userId;
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return;
+
+    let message = '';
+    switch (status) {
+      case 'started':
+        message = 'Your delivery is on the way.';
+        break;
+      case 'at_gate':
+        message = 'Your delivery has arrived at the estate gate.';
+        break;
+      case 'delivered':
+        message = 'Your delivery is complete. Enjoy your product!';
+        break;
       default:
-        await sendMessage(from, "Sorry, I didn't understand that. Type 'menu' to see options.");
         return;
     }
 
-    updateData['onboarding.stage'] = nextStage;
-    updateData['onboarding.lastActive'] = admin.firestore.FieldValue.serverTimestamp();
-    
-    await userRef.update(updateData);
-    await updateGoogleSheet({
-      ...userData,
-      ...updateData,
-      phone: from
-    });
-
+    await sendMessage(userId, `Delivery Update: ${message}`);
   } catch (err) {
-    console.error('Onboarding error:', err);
-    await sendMessage(from, "⚠️ We encountered an error. Please try again or type 'menu' to restart.");
+    console.error('Delivery status update error:', err);
   }
 }
 
-app.get('/', (req, res) => res.send('✅ WhatsApp Bot running'));
+app.get('/', (req, res) => res.send('Mountain View Electronics WhatsApp Bot running'));
 
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -1106,75 +959,50 @@ app.post('/webhook', async (req, res) => {
     const userDoc = await userRef.get();
     const userData = userDoc.exists ? userDoc.data() : null;
 
+    // Handle menu command
     if (message.text?.body?.toLowerCase().trim() === 'menu') {
       if (!userDoc.exists) {
-        await startOnboarding(from);
-      } else {
-        await sendMenuOptions(from);
-      }
-      return res.sendStatus(200);
-    }
-
-    if (message.interactive?.button_reply?.id === 'menu_resume') {
-      if (userData?.onboarding?.stage) {
-        await handleOnboardingStage(from, '', userData.onboarding.stage, userRef, userData);
-      } else {
         await sendWelcomeMessage(from);
+      } else {
+        await sendProductCatalog(from);
       }
       return res.sendStatus(200);
     }
 
-    if (message.interactive?.button_reply?.id === 'menu_restart') {
-      await startOnboarding(from);
-      return res.sendStatus(200);
-    }
-
-    if (message.interactive?.button_reply?.id === 'menu_agent') {
-      await userRef.update({
-        requiresAgent: true,
-        agentRequestedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-      await sendMessage(from, "We're connecting you to a human agent now. Please hold...");
-      
-      agentResponseTimers.set(from, setTimeout(async () => {
-        const currentUserData = (await db.collection('users').doc(from).get()).data();
-        if (currentUserData.requiresAgent && !currentUserData.assignedAgent) {
-          await sendMessage(from, "Our agents are currently busy. Let me help you instead!");
-          const aiResponse = await getAIResponse(message.text?.body || '', from);
-          await sendMessage(from, aiResponse);
-          await db.collection('users').doc(from).update({
-            aiEnabled: true,
-            requiresAgent: false
-          });
+    // Handle case check
+    if (message.text?.body?.toLowerCase().includes('case')) {
+      if (userData?.caseNumber) {
+        const caseDoc = await db.collection('cases').where('caseNumber', '==', userData.caseNumber).limit(1).get();
+        if (!caseDoc.empty) {
+          const caseData = caseDoc.docs[0].data();
+          await sendMessage(from, `Case ${caseData.caseNumber}\nStatus: ${caseData.status}\nAgent: ${caseData.assignedAgent || 'Not assigned'}`);
+        } else {
+          await sendMessage(from, "No active case found. Would you like to create one?");
         }
-      }, AGENT_RESPONSE_TIMEOUT));
-      
+      } else {
+        await sendMessage(from, "No active case found. Would you like to create one?");
+      }
       return res.sendStatus(200);
     }
 
-    if (['restart', 'start'].includes(message.text?.body?.toLowerCase().trim())) {
-      await startOnboarding(from);
-      return res.sendStatus(200);
-    }
-
-    if (userData?.onboarding?.timeoutAt?.toDate() < new Date()) {
-      await sendMessage(from, "⏰ Our conversation timed out. Type 'menu' to begin again.");
-      await userRef.update({ 'onboarding.closed': true });
-      return res.sendStatus(200);
-    }
-
+    // Handle onboarding flow
     if (!userDoc.exists) {
-      await startOnboarding(from);
+      await userRef.set({
+        phone: from,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'new'
+      });
+      await sendWelcomeMessage(from);
       return res.sendStatus(200);
     }
 
+    // Update last active timestamp
     await userRef.update({
-      'onboarding.lastActive': admin.firestore.FieldValue.serverTimestamp()
+      lastActive: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    const currentStage = userData.onboarding?.stage || 'welcome';
+    // Extract message text
     let text = '';
-
     if (message.type === 'text') {
       text = message.text?.body || '';
     } else if (message.type === 'interactive') {
@@ -1185,15 +1013,73 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    if (userData.onboarding?.completed || userData.aiEnabled) {
-      if (!text.includes('agent') && !userData.requiresAgent && !userData.assignedAgent) {
-        const aiResponse = await getAIResponse(text, from);
-        await sendMessage(from, aiResponse, true);
-        return res.sendStatus(200);
-      }
+    // Handle onboarding stages
+    if (userData.onboarding?.stage) {
+      await handleOnboardingStage(from, text, userData.onboarding.stage, userRef, userData);
+      return res.sendStatus(200);
     }
 
-    await handleOnboardingStage(from, text, currentStage, userRef, userData);
+    // Handle product selection
+    if (text.startsWith('product_')) {
+      const productId = text.replace('product_', '');
+      await sendProductDetails(from, productId);
+      return res.sendStatus(200);
+    }
+
+    // Handle trial booking
+    if (text.startsWith('book_')) {
+      const productId = text.replace('book_', '');
+      await requestDeliveryDetails(from, productId, true);
+      return res.sendStatus(200);
+    }
+
+    // Handle direct purchase
+    if (text.startsWith('buy_')) {
+      const productId = text.replace('buy_', '');
+      await requestDeliveryDetails(from, productId, false);
+      return res.sendStatus(200);
+    }
+
+    // Handle back to catalog
+    if (text === 'back_catalog') {
+      await sendProductCatalog(from);
+      return res.sendStatus(200);
+    }
+
+    // Handle payment confirmation
+    if (text === 'payment_done') {
+      const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
+      const product = productDoc.data() || {};
+      
+      await verifyPayment(from, {
+        amount: product.price,
+        method: 'M-Pesa'
+      });
+      return res.sendStatus(200);
+    }
+
+    // Handle feedback
+    if (text === 'feedback_yes') {
+      await sendMessage(from, "Please share your feedback about your purchase experience and product quality:");
+      await userRef.update({ 'onboarding.stage': 'feedback' });
+      return res.sendStatus(200);
+    }
+
+    // Handle case creation
+    if (text === 'followup_issues' || text === 'checkin_issues') {
+      await createCase(from, text === 'followup_issues' ? 'post_purchase_issue' : 'trial_issue');
+      return res.sendStatus(200);
+    }
+
+    // Default AI response for customers
+    if (userData.status === 'customer') {
+      const aiResponse = await getAIResponse(text, from);
+      await sendMessage(from, aiResponse, true);
+      return res.sendStatus(200);
+    }
+
+    // Default response
+    await sendMessage(from, "Sorry, I didn't understand that. Type MENU to see options.");
     res.sendStatus(200);
   } catch (err) {
     console.error('Webhook error:', err);
@@ -1201,10 +1087,141 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+async function handleOnboardingStage(from, text, stage, userRef, userData) {
+  const updateData = {};
+  let nextStage = stage;
+
+  try {
+    switch (stage) {
+      case 'welcome':
+        if (text === 'welcome_yes') {
+          updateData.isEstateResident = true;
+          nextStage = 'product_catalog';
+          await sendProductCatalog(from);
+        } else if (text === 'welcome_no') {
+          updateData.isEstateResident = false;
+          nextStage = 'product_catalog';
+          await sendProductCatalog(from);
+        } else {
+          await sendWelcomeMessage(from);
+          return;
+        }
+        break;
+
+      case 'house_number':
+        if (text && text.match(/^[A-Za-z]?\d+$/)) {
+          updateData.houseNumber = text.toUpperCase();
+          const productId = userData.onboarding.productId;
+          const isTrial = userData.onboarding.isTrial;
+          nextStage = 'delivery_date';
+          await sendMessage(from, "Please enter your preferred delivery date (DD-MM-YYYY):");
+        } else {
+          await sendMessage(from, "Invalid house number format. Please use format like B42 or 42.");
+          return;
+        }
+        break;
+
+      case 'delivery_date':
+        if (text && text.match(/^\d{2}-\d{2}-\d{4}$/)) {
+          const productId = userData.onboarding.productId;
+          const isTrial = userData.onboarding.isTrial;
+          nextStage = 'delivery_time';
+          await requestDeliveryTime(from, productId, text, isTrial);
+        } else {
+          await sendMessage(from, "Invalid date format. Please use DD-MM-YYYY format.");
+          return;
+        }
+        break;
+
+      case 'delivery_time':
+        if (text.startsWith('time_')) {
+          const parts = text.split('_');
+          const timeSlot = parts[1];
+          const productId = parts[2];
+          const deliveryDate = userData.onboarding.deliveryDate;
+          const isTrial = userData.onboarding.isTrial;
+          
+          nextStage = 'order_confirmation';
+          await confirmOrder(from, productId, deliveryDate, timeSlot, isTrial);
+        } else {
+          const productId = userData.onboarding.productId;
+          const deliveryDate = userData.onboarding.deliveryDate;
+          const isTrial = userData.onboarding.isTrial;
+          await requestDeliveryTime(from, productId, deliveryDate, isTrial);
+          return;
+        }
+        break;
+
+      case 'order_confirmation':
+        if (text.startsWith('confirm_trial_')) {
+          const productId = text.replace('confirm_trial_', '');
+          const deliveryDate = userData.onboarding.deliveryDate;
+          const timeSlot = userData.onboarding.timeSlot;
+          
+          await startTrialPeriod(from, productId, deliveryDate, timeSlot);
+          nextStage = 'trial_active';
+        } else if (text.startsWith('confirm_payment_')) {
+          const productId = text.replace('confirm_payment_', '');
+          await requestPayment(from);
+          nextStage = 'payment_pending';
+        } else if (text === 'cancel_order') {
+          nextStage = '';
+          await sendMessage(from, "Order cancelled. Type MENU to browse products.");
+        } else {
+          const productId = userData.onboarding.productId;
+          const deliveryDate = userData.onboarding.deliveryDate;
+          const timeSlot = userData.onboarding.timeSlot;
+          const isTrial = userData.onboarding.isTrial;
+          await confirmOrder(from, productId, deliveryDate, timeSlot, isTrial);
+          return;
+        }
+        break;
+
+      case 'feedback':
+        if (text && text.length > 10) {
+          await db.collection('feedback').add({
+            userId: from,
+            feedback: text,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            discountEligible: true
+          });
+          
+          await sendMessage(from, "Thank you for your feedback! You've earned a 5% discount on your next purchase.");
+          nextStage = '';
+        } else {
+          await sendMessage(from, "Please provide more detailed feedback (at least 10 characters).");
+          return;
+        }
+        break;
+
+      default:
+        await sendMessage(from, "Sorry, I didn't understand that. Type MENU to see options.");
+        return;
+    }
+
+    if (nextStage) {
+      updateData['onboarding.stage'] = nextStage;
+    } else {
+      updateData['onboarding'] = admin.firestore.FieldValue.delete();
+    }
+    
+    await userRef.update(updateData);
+    await updateGoogleSheet({
+      ...userData,
+      ...updateData,
+      phone: from
+    });
+
+  } catch (err) {
+    console.error('Onboarding error:', err);
+    await sendMessage(from, "We encountered an error. Please try again or type MENU to restart.");
+  }
+}
+
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`⏰ Last restart: ${new Date().toISOString()}`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Last restart: ${new Date().toISOString()}`);
 });
 
 process.on('SIGTERM', () => {
