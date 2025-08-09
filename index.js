@@ -29,8 +29,7 @@ const {
   GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL,
   PUBLIC_KEY,
-  GOOGLE_PRIVATE_KEY,
-  PAYMENT_TILL_NUMBER
+  GOOGLE_PRIVATE_KEY
 } = process.env;
 
 const publicKey = process.env.PUBLIC_KEY?.replace(/\\n/g, '\n');
@@ -40,87 +39,69 @@ rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-async function initializeFirebaseCollections() {
-  const requiredCollections = [
-    'products',
-    'complementary_products',
-    'orders',
-    'cases',
-    'feedback',
-    'agents',
+// Initialize required collections
+async function initializeCollections() {
+  const collections = [
     'whatsapp_logs',
-    'users'
+    'users',
+    'products',
+    'orders',
+    'deliveries',
+    'cases',
+    'loyalty_points',
+    'product_education',
+    'complementary_products'
   ];
 
-  const sampleProduct = {
-    name: "Premium Power Bank 20,000mAh",
-    description: "High-capacity portable charger with fast charging",
-    price: 3500,
-    images: ["https://example.com/powerbank.jpg"],
-    specs: {
-      capacity: "20000mAh",
-      output: "5V/2.4A",
-      input: "5V/2A",
-      weight: "350g"
-    },
-    active: true,
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
-  };
-
-  const sampleComplementary = {
-    mainProduct: "sample_product_id",
-    complementaryProduct: "sample_accessory_id",
-    relationType: "accessory",
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
-  };
-
-  try {
-    console.log("Initializing Firebase collections...");
-    
-    for (const collectionName of requiredCollections) {
+  for (const collectionName of collections) {
+    try {
       const collectionRef = db.collection(collectionName);
       const snapshot = await collectionRef.limit(1).get();
-      
       if (snapshot.empty) {
-        console.log(`Creating collection: ${collectionName}`);
-        
-        if (collectionName === 'products') {
-          const docRef = await collectionRef.add(sampleProduct);
-          console.log(`Added sample product with ID: ${docRef.id}`);
-        } else if (collectionName === 'complementary_products') {
-          const productRef = db.collection('products').doc('sample_product_id');
-          await productRef.set(sampleProduct);
-          
-          const accessoryRef = db.collection('products').doc('sample_accessory_id');
-          await accessoryRef.set({
-            name: "Fast Charging Cable",
-            description: "3-in-1 charging cable (Type-C, Micro-USB, Lightning)",
-            price: 800,
-            images: ["https://example.com/cable.jpg"],
-            active: true,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-          
-          await collectionRef.add(sampleComplementary);
-        } else {
-          await collectionRef.add({
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            placeholder: true,
-            note: "Initial collection setup"
-          });
-        }
+        // Create collection with a dummy document if it doesn't exist
+        await collectionRef.doc('init').set({ initialized: true });
+        console.log(`Created collection: ${collectionName}`);
       }
+    } catch (err) {
+      console.error(`Error initializing collection ${collectionName}:`, err);
     }
-    
-    console.log("Firebase collections initialization complete");
-  } catch (error) {
-    console.error("Error initializing collections:", error);
+  }
+
+  // Initialize default products if none exist
+  const productsRef = db.collection('products');
+  const productsSnapshot = await productsRef.limit(1).get();
+  if (productsSnapshot.empty) {
+    const defaultProducts = [
+      {
+        name: "Premium Power Bank 10000mAh",
+        description: "High capacity portable charger",
+        price: 2500,
+        trial_days: 7,
+        images: ["powerbank_front.jpg", "powerbank_back.jpg"],
+        category: "power_banks",
+        stock: 100,
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      },
+      {
+        name: "Wireless Earbuds",
+        description: "Bluetooth 5.0 with charging case",
+        price: 3500,
+        trial_days: 7,
+        images: ["earbuds_front.jpg", "earbuds_back.jpg"],
+        category: "audio",
+        stock: 50,
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      }
+    ];
+
+    for (const product of defaultProducts) {
+      await productsRef.add(product);
+    }
+    console.log("Added default products");
   }
 }
 
-initializeFirebaseCollections().catch(err => {
-  console.error("Failed to initialize collections:", err);
-});
+initializeCollections().catch(console.error);
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -130,7 +111,6 @@ const transporter = nodemailer.createTransport({
 const AGENT_RESPONSE_TIMEOUT = 5000;
 const DEMO_DELAY = 2000;
 const agentResponseTimers = new Map();
-const TRIAL_DURATION_DAYS = 7;
 
 async function logMessage(direction, messageData) {
   try {
@@ -282,13 +262,12 @@ async function updateGoogleSheet(userData) {
       'Timestamp': new Date().toISOString(),
       'Phone': userData.phone,
       'Name': userData.name || '',
-      'Status': userData.status || '',
-      'HouseNumber': userData.houseNumber || '',
-      'CurrentProduct': userData.currentTrialProduct || '',
-      'TrialStartDate': userData.trialStartDate || '',
-      'PaymentStatus': userData.paymentStatus || '',
+      'Address': userData.address || '',
+      'UserType': userData.userType || '',
       'LoyaltyPoints': userData.loyaltyPoints || 0,
-      'CaseNumber': userData.caseNumber || ''
+      'LastOrderDate': userData.lastOrderDate || '',
+      'Status': userData.status || 'active',
+      'LastActive': new Date().toISOString()
     };
 
     if (existingRow) {
@@ -304,15 +283,7 @@ async function updateGoogleSheet(userData) {
   }
 }
 
-function getTrialDay(userData) {
-  if (!userData.trialStartDate) return 0;
-  const startDate = userData.trialStartDate.toDate();
-  const now = new Date();
-  const diffTime = Math.abs(now - startDate);
-  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-}
-
-async function getAIResponse(userText, userId, context = '') {
+async function getAIResponse(userText, userId) {
   const userRef = await db.collection('users').doc(userId).get();
   const userData = userRef.data() || {};
   
@@ -320,8 +291,8 @@ async function getAIResponse(userText, userId, context = '') {
     tone: "professional and helpful",
     traits: [
       "Keep responses under 200 characters",
-      "Use bullet points when possible",
-      "Focus on product benefits and features",
+      "Use bullet points when appropriate",
+      "Focus on product benefits",
       "Provide clear next steps"
     ]
   };
@@ -339,9 +310,7 @@ async function getAIResponse(userText, userId, context = '') {
                      `Current user context:\n` +
                      `Name: ${userData.name || 'Customer'}\n` +
                      `Status: ${userData.status || 'New'}\n` +
-                     `Product: ${userData.currentTrialProduct || 'None'}\n` +
-                     `Trial Day: ${getTrialDay(userData) || '0'}\n` +
-                     `${context}`
+                     `Loyalty Points: ${userData.loyaltyPoints || 0}`
           },
           { role: "user", content: userText }
         ],
@@ -370,20 +339,35 @@ async function getAIResponse(userText, userId, context = '') {
     return response;
   } catch (err) {
     console.error('AI error:', err.response?.data || err.message);
-    return "I'm having trouble responding. Please try again or visit our website for assistance.";
+    return "I'm currently having trouble processing your request. Please try again later or visit our website for assistance.";
   }
+}
+
+async function registerNewUser(userId) {
+  await db.collection('users').doc(userId).set({
+    phone: userId,
+    status: 'new',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastActive: admin.firestore.FieldValue.serverTimestamp(),
+    loyaltyPoints: 0,
+    address: '',
+    userType: 'potential',
+    trialProducts: [],
+    orders: [],
+    cases: []
+  }, { merge: true });
 }
 
 async function sendWelcomeMessage(to) {
   const interactiveData = {
     type: 'button',
     body: {
-      text: "Welcome to Mountain View Electronics. Are you a Mountain View Estate resident?"
+      text: "Welcome to Mountain View Electronics. We offer premium power banks and electronic devices with a free trial option for Mountain View Estate residents."
     },
     action: {
       buttons: [
-        { type: 'reply', reply: { id: 'welcome_yes', title: 'Yes, I am a resident' } },
-        { type: 'reply', reply: { id: 'welcome_no', title: 'No, I am not' } }
+        { type: 'reply', reply: { id: 'welcome_continue', title: 'Continue' } },
+        { type: 'reply', reply: { id: 'welcome_help', title: 'Need Help' } }
       ]
     }
   };
@@ -391,606 +375,410 @@ async function sendWelcomeMessage(to) {
 }
 
 async function sendProductCatalog(to) {
-  try {
-    const productsSnapshot = await db.collection('products').where('active', '==', true).get();
-    const products = [];
-    
-    productsSnapshot.forEach(doc => {
-      products.push({ id: doc.id, ...doc.data() });
-    });
-
-    if (products.length === 0) {
-      await sendMessage(to, "Currently no products available. Please check back later.");
-      return;
-    }
-
-    const firstProduct = products[0];
-    if (firstProduct.images && firstProduct.images.length > 0) {
-      await sendImageMessage(to, firstProduct.images[0], 
-        `${firstProduct.name}\n${firstProduct.description}\nPrice: KES ${firstProduct.price}`);
-    }
-
-    if (products.length > 1) {
-      const sections = [{
-        title: 'Available Products',
-        rows: products.slice(1).map(product => ({
-          id: `product_${product.id}`,
-          title: product.name,
-          description: `KES ${product.price}`
-        }))
-      }];
-
-      const interactiveData = {
-        type: 'list',
-        header: { type: 'text', text: 'Our Products' },
-        body: { text: 'Select a product to view details:' },
-        action: {
-          button: 'View Products',
-          sections: sections
-        }
-      };
-
-      await sendInteractiveMessage(to, interactiveData);
-    }
-  } catch (err) {
-    console.error('Product catalog error:', err);
-    await sendMessage(to, "Failed to load products. Please try again later.");
+  const productsSnapshot = await db.collection('products').limit(5).get();
+  if (productsSnapshot.empty) {
+    await sendMessage(to, "Our products are currently being updated. Please check back later.");
+    return;
   }
-}
 
-async function sendProductDetails(to, productId) {
-  try {
-    const productDoc = await db.collection('products').doc(productId).get();
-    if (!productDoc.exists) {
-      await sendMessage(to, "Product not found.");
-      return;
-    }
+  await sendMessage(to, "Here are our featured products:");
 
-    const product = productDoc.data();
-    const userDoc = await db.collection('users').doc(to).get();
-    const userData = userDoc.data() || {};
-
+  for (const doc of productsSnapshot.docs) {
+    const product = doc.data();
     if (product.images && product.images.length > 0) {
-      await sendImageMessage(to, product.images[0], 
-        `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
-    }
-
-    if (userData.isEstateResident) {
-      const interactiveData = {
-        type: 'button',
-        body: {
-          text: `${product.name}\n\n${product.description}\n\nPrice: KES ${product.price}\n\nAs a Mountain View resident, you qualify for a 1-week free trial.`
-        },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: `book_${productId}`, title: 'Book Free Trial' } },
-            { type: 'reply', reply: { id: 'back_catalog', title: 'Back to Catalog' } }
-          ]
-        }
-      };
-      await sendInteractiveMessage(to, interactiveData);
+      await sendImageMessage(to, product.images[0], `${product.name}\nPrice: KES ${product.price}\n${product.description}`);
     } else {
-      const interactiveData = {
-        type: 'button',
-        body: {
-          text: `${product.name}\n\n${product.description}\n\nPrice: KES ${product.price}\n\nPayment required upfront for non-residents.`
-        },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
-            { type: 'reply', reply: { id: 'back_catalog', title: 'Back to Catalog' } }
-          ]
-        }
-      };
-      await sendInteractiveMessage(to, interactiveData);
+      await sendMessage(to, `${product.name}\nPrice: KES ${product.price}\n${product.description}`);
     }
-  } catch (err) {
-    console.error('Product details error:', err);
-    await sendMessage(to, "Failed to load product details. Please try again later.");
   }
+
+  const interactiveData = {
+    type: 'button',
+    body: {
+      text: "Would you like to proceed with any of these products?"
+    },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'catalog_yes', title: 'Yes, Proceed' } },
+        { type: 'reply', reply: { id: 'catalog_no', title: 'Browse More' } }
+      ]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
 }
 
-async function requestDeliveryDetails(to, productId, isTrial = true) {
-  try {
-    const userDoc = await db.collection('users').doc(to).get();
-    const userData = userDoc.data() || {};
-
-    if (userData.isEstateResident && !userData.houseNumber) {
-      await sendMessage(to, "Please provide your Mountain View Estate house number (e.g., B42):");
-      await db.collection('users').doc(to).update({
-        onboarding: {
-          stage: 'house_number',
-          productId: productId,
-          isTrial: isTrial
-        }
-      });
-      return;
+async function requestAddress(to) {
+  const interactiveData = {
+    type: 'button',
+    body: {
+      text: "Are you a Mountain View Estate resident?"
+    },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'address_yes', title: 'Yes, I am' } },
+        { type: 'reply', reply: { id: 'address_no', title: 'No, Outside' } }
+      ]
     }
-
-    await sendMessage(to, "Please enter your preferred delivery date (DD-MM-YYYY):");
-    await db.collection('users').doc(to).update({
-      onboarding: {
-        stage: 'delivery_date',
-        productId: productId,
-        isTrial: isTrial
-      }
-    });
-  } catch (err) {
-    console.error('Delivery details error:', err);
-    await sendMessage(to, "Failed to process delivery request. Please try again later.");
-  }
+  };
+  await sendInteractiveMessage(to, interactiveData);
 }
 
-async function requestDeliveryTime(to, productId, deliveryDate, isTrial) {
-  try {
+async function requestHouseNumber(to) {
+  await sendMessage(to, "Please provide your house number in Mountain View Estate:");
+}
+
+async function requestFullAddress(to) {
+  await sendMessage(to, "Please provide your full delivery address:");
+}
+
+async function requestDeliveryDate(to) {
+  const interactiveData = {
+    type: 'button',
+    body: {
+      text: "When would you like your delivery?"
+    },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'delivery_today', title: 'Today' } },
+        { type: 'reply', reply: { id: 'delivery_tomorrow', title: 'Tomorrow' } },
+        { type: 'reply', reply: { id: 'delivery_custom', title: 'Specific Date' } }
+      ]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
+}
+
+async function requestDeliveryTime(to) {
+  const interactiveData = {
+    type: 'button',
+    body: {
+      text: "Select preferred delivery time:"
+    },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'time_morning', title: 'Morning (8am-12pm)' } },
+        { type: 'reply', reply: { id: 'time_afternoon', title: 'Afternoon (12pm-5pm)' } },
+        { type: 'reply', reply: { id: 'time_evening', title: 'Evening (5pm-8pm)' } }
+      ]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
+}
+
+async function confirmOrder(to, productId, userData) {
+  const productRef = await db.collection('products').doc(productId).get();
+  if (!productRef.exists) {
+    await sendMessage(to, "The selected product is no longer available. Please choose another product.");
+    return;
+  }
+
+  const product = productRef.data();
+  const isEstateResident = userData.address.includes('Mountain View Estate');
+  const requiresPayment = !isEstateResident || userData.status === 'returning';
+
+  if (requiresPayment) {
     const interactiveData = {
       type: 'button',
       body: {
-        text: `Please select delivery time for ${deliveryDate}:`
+        text: `Confirm order for ${product.name} at KES ${product.price}? Payment is required upfront.`
       },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: `time_morning_${productId}`, title: 'Morning (8am-12pm)' } },
-          { type: 'reply', reply: { id: `time_afternoon_${productId}`, title: 'Afternoon (12pm-4pm)' } },
-          { type: 'reply', reply: { id: `time_evening_${productId}`, title: 'Evening (4pm-8pm)' } }
+          { type: 'reply', reply: { id: 'order_confirm_pay', title: 'Confirm & Pay' } },
+          { type: 'reply', reply: { id: 'order_cancel', title: 'Cancel' } }
         ]
       }
     };
-    
     await sendInteractiveMessage(to, interactiveData);
-    await db.collection('users').doc(to).update({
-      onboarding: {
-        stage: 'delivery_time',
-        productId: productId,
-        deliveryDate: deliveryDate,
-        isTrial: isTrial
+  } else {
+    const interactiveData = {
+      type: 'button',
+      body: {
+        text: `Confirm order for ${product.name} with 7-day free trial?`
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'order_confirm_trial', title: 'Confirm Trial' } },
+          { type: 'reply', reply: { id: 'order_cancel', title: 'Cancel' } }
+        ]
       }
-    });
-  } catch (err) {
-    console.error('Delivery time error:', err);
-    await sendMessage(to, "Failed to process delivery time. Please try again later.");
+    };
+    await sendInteractiveMessage(to, interactiveData);
   }
 }
 
-async function confirmOrder(to, productId, deliveryDate, timeSlot, isTrial) {
-  try {
-    const productDoc = await db.collection('products').doc(productId).get();
-    if (!productDoc.exists) {
-      await sendMessage(to, "Product no longer available.");
-      return;
-    }
+async function createOrder(userId, productId, deliveryDetails, isTrial) {
+  const orderRef = db.collection('orders').doc();
+  const productRef = await db.collection('products').doc(productId).get();
+  const product = productRef.data();
 
-    const product = productDoc.data();
-    const userDoc = await db.collection('users').doc(to).get();
-    const userData = userDoc.data() || {};
+  const orderData = {
+    orderId: orderRef.id,
+    userId: userId,
+    productId: productId,
+    productName: product.name,
+    price: product.price,
+    status: isTrial ? 'trial_started' : 'paid',
+    deliveryDetails: deliveryDetails,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    trialEndDate: isTrial ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
+    paymentStatus: isTrial ? 'not_required' : 'pending'
+  };
 
-    let message = `Order Summary:\n\n`;
-    message += `Product: ${product.name}\n`;
-    message += `Delivery Date: ${deliveryDate}\n`;
-    message += `Time Slot: ${timeSlot}\n`;
-    
-    if (userData.houseNumber) {
-      message += `House Number: ${userData.houseNumber}\n`;
-    }
-
-    if (isTrial) {
-      message += `\nYou have a 1-week free trial period. Payment of KES ${product.price} will be requested after trial.`;
-      
-      const interactiveData = {
-        type: 'button',
-        body: {
-          text: message
-        },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: `confirm_trial_${productId}`, title: 'Confirm Trial' } },
-            { type: 'reply', reply: { id: 'cancel_order', title: 'Cancel' } }
-          ]
-        }
-      };
-      
-      await sendInteractiveMessage(to, interactiveData);
-    } else {
-      message += `\nTotal: KES ${product.price}\n\nPlease pay to Till Number ${PAYMENT_TILL_NUMBER} and send receipt.`;
-      
-      const interactiveData = {
-        type: 'button',
-        body: {
-          text: message
-        },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: `confirm_payment_${productId}`, title: 'I Have Paid' } },
-            { type: 'reply', reply: { id: 'cancel_order', title: 'Cancel' } }
-          ]
-        }
-      };
-      
-      await sendInteractiveMessage(to, interactiveData);
-    }
-
-    await db.collection('users').doc(to).update({
-      onboarding: {
-        stage: 'order_confirmation',
-        productId: productId,
-        deliveryDate: deliveryDate,
-        timeSlot: timeSlot,
-        isTrial: isTrial
-      }
-    });
-  } catch (err) {
-    console.error('Order confirmation error:', err);
-    await sendMessage(to, "Failed to process order. Please try again later.");
-  }
+  await orderRef.set(orderData);
+  return orderRef.id;
 }
 
-async function startTrialPeriod(to, productId, deliveryDate, timeSlot) {
-  try {
-    const trialEndDate = new Date();
-    trialEndDate.setDate(trialEndDate.getDate() + TRIAL_DURATION_DAYS);
-
-    await db.collection('users').doc(to).update({
-      status: 'trial',
-      currentTrialProduct: productId,
-      trialStartDate: admin.firestore.FieldValue.serverTimestamp(),
-      trialEndDate: admin.firestore.Timestamp.fromDate(trialEndDate),
-      'onboarding.stage': 'trial_active'
-    });
-
-    await db.collection('orders').add({
-      userId: to,
-      productId: productId,
-      deliveryDate: deliveryDate,
-      deliverySlot: timeSlot,
-      status: 'pending',
-      isTrial: true,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    await sendMessage(to, `Your 1-week trial for ${productId} starts upon delivery. We'll check in during your trial period.`);
-
-    scheduleTrialCheckins(to);
-  } catch (err) {
-    console.error('Trial start error:', err);
-    await sendMessage(to, "Failed to start trial period. Please contact support.");
-  }
+async function sendPaymentInstructions(to, orderId, amount) {
+  const interactiveData = {
+    type: 'button',
+    body: {
+      text: `Please pay KES ${amount} to Till Number 123456. Once paid, click below to confirm.`
+    },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: `payment_confirm_${orderId}`, title: 'I Have Paid' } },
+        { type: 'reply', reply: { id: 'payment_help', title: 'Need Help' } }
+      ]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
 }
 
-async function scheduleTrialCheckins(userId) {
-  const checkinIntervals = [
-    { hours: 3 },
-    { hours: 24 },
-    { days: 3 },
-    { days: 5 },
-    { days: 7 }
+async function sendTrialStartedMessage(to, productName, trialEndDate) {
+  const endDate = trialEndDate.toLocaleDateString();
+  await sendMessage(to, `Your trial for ${productName} has started. You have until ${endDate} to test the product before purchase.`);
+  
+  // Schedule follow-up messages
+  scheduleTrialFollowUps(to, trialEndDate);
+}
+
+async function scheduleTrialFollowUps(to, trialEndDate) {
+  // Schedule messages at 3h, 24h, 3 days, and 1 day before trial ends
+  const followUps = [
+    { delay: 3 * 60 * 60 * 1000, message: "How is your trial product working so far? Any questions?" },
+    { delay: 24 * 60 * 60 * 1000, message: "We hope you're enjoying your trial product. Let us know if you need any assistance." },
+    { delay: 3 * 24 * 60 * 60 * 1000, message: "Halfway through your trial period. How is the product meeting your needs?" },
+    { delay: 6 * 24 * 60 * 60 * 1000, message: "Your trial ends tomorrow. Would you like to proceed with the purchase?" }
   ];
 
-  for (const interval of checkinIntervals) {
-    const delay = interval.hours 
-      ? interval.hours * 60 * 60 * 1000 
-      : interval.days * 24 * 60 * 60 * 1000;
-
+  for (const followUp of followUps) {
     setTimeout(async () => {
-      const userDoc = await db.collection('users').doc(userId).get();
-      const userData = userDoc.data() || {};
-
-      if (userData.status === 'trial') {
-        await sendTrialCheckin(userId, userData);
+      const userRef = await db.collection('users').doc(to).get();
+      if (userRef.exists) {
+        const interactiveData = {
+          type: 'button',
+          body: {
+            text: followUp.message
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'feedback_positive', title: 'Going Well' } },
+              { type: 'reply', reply: { id: 'feedback_issues', title: 'Having Issues' } }
+            ]
+          }
+        };
+        await sendInteractiveMessage(to, interactiveData);
       }
-    }, delay);
+    }, followUp.delay);
   }
 }
 
-async function sendTrialCheckin(userId, userData) {
-  try {
-    const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
-    const product = productDoc.data() || {};
-    const trialDay = getTrialDay(userData);
-
-    let message = '';
-    if (trialDay === 0) {
-      message = `How is your first impression of the ${product.name}?`;
-    } else if (trialDay < TRIAL_DURATION_DAYS) {
-      message = `Day ${trialDay} of your trial. How is the ${product.name} working for you?`;
-    } else {
-      message = `Your trial period has ended. Would you like to purchase the ${product.name}?`;
-    }
-
-    const tipsContext = `Generate 1-2 short bullet points about using ${product.name} (${product.description}). Focus on helpful tips for day ${trialDay} of use.`;
-    const productTips = await getAIResponse('', userId, tipsContext);
-
-    const compProducts = await getComplementaryProducts(userData.currentTrialProduct);
-
-    let fullMessage = `${message}\n\n`;
-    fullMessage += `Product Tips:\n${productTips}\n\n`;
-
-    if (compProducts.length > 0) {
-      fullMessage += `Recommended Accessories:\n`;
-      compProducts.forEach(p => {
-        fullMessage += `- ${p.name} (KES ${p.price})\n`;
-      });
-    }
-
-    if (trialDay >= TRIAL_DURATION_DAYS) {
-      const interactiveData = {
-        type: 'button',
-        body: {
-          text: fullMessage
-        },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: 'purchase_product', title: 'Purchase Now' } },
-            { type: 'reply', reply: { id: 'return_product', title: 'Return Product' } }
-          ]
-        }
-      };
-      await sendInteractiveMessage(userId, interactiveData);
-    } else {
-      const interactiveData = {
-        type: 'button',
-        body: {
-          text: fullMessage
-        },
-        action: {
-          buttons: [
-            { type: 'reply', reply: { id: 'checkin_good', title: 'Working Well' } },
-            { type: 'reply', reply: { id: 'checkin_issues', title: 'Having Issues' } }
-          ]
-        }
-      };
-      await sendInteractiveMessage(userId, interactiveData);
-    }
-  } catch (err) {
-    console.error('Trial checkin error:', err);
+async function sendOrderConfirmation(to, orderId) {
+  const orderRef = await db.collection('orders').doc(orderId).get();
+  if (!orderRef.exists) {
+    await sendMessage(to, "We couldn't find your order details. Please contact support.");
+    return;
   }
-}
 
-async function getComplementaryProducts(mainProductId) {
-  try {
-    const compProducts = [];
-    const compSnapshot = await db.collection('complementary_products')
-      .where('mainProduct', '==', mainProductId)
-      .limit(3)
-      .get();
+  const order = orderRef.data();
+  await sendMessage(to, `Thank you for your order! Your ${order.productName} will be delivered as scheduled.`);
 
-    for (const doc of compSnapshot.docs) {
-      const productId = doc.data().complementaryProduct;
-      const productDoc = await db.collection('products').doc(productId).get();
-      if (productDoc.exists) {
-        compProducts.push({ id: productId, ...productDoc.data() });
-      }
-    }
+  // Update user status
+  await db.collection('users').doc(to).update({
+    status: 'customer',
+    lastOrderDate: admin.firestore.FieldValue.serverTimestamp()
+  });
 
-    return compProducts;
-  } catch (err) {
-    console.error('Complementary products error:', err);
-    return [];
-  }
-}
-
-async function requestPayment(to) {
-  try {
-    const userDoc = await db.collection('users').doc(to).get();
-    const userData = userDoc.data() || {};
-    const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
-    const product = productDoc.data() || {};
-
-    let message = `Payment Request\n\n`;
-    message += `Product: ${product.name}\n`;
-    message += `Amount: KES ${product.price}\n\n`;
-    message += `Please pay to Till Number ${PAYMENT_TILL_NUMBER}\n`;
-    message += `Include your phone number as reference\n\n`;
-    message += `Complete your purchase to continue enjoying your product.`;
-
+  // Schedule post-delivery check-in
+  setTimeout(async () => {
     const interactiveData = {
       type: 'button',
       body: {
-        text: message
+        text: "How was your delivery experience?"
       },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'payment_done', title: 'I Have Paid' } },
-          { type: 'reply', reply: { id: 'payment_help', title: 'Need Help' } }
+          { type: 'reply', reply: { id: 'delivery_good', title: 'Good' } },
+          { type: 'reply', reply: { id: 'delivery_issues', title: 'Had Issues' } }
         ]
       }
     };
-
     await sendInteractiveMessage(to, interactiveData);
-  } catch (err) {
-    console.error('Payment request error:', err);
-    await sendMessage(to, "Failed to process payment request. Please try again later.");
-  }
+  }, 24 * 60 * 60 * 1000); // 24 hours after confirmation
 }
 
-async function verifyPayment(to, paymentDetails) {
+async function handleNewUserFlow(from, text, userRef, userData) {
+  const updateData = {};
+  let nextStage = userData.onboarding?.stage || 'welcome';
+
   try {
-    await db.collection('users').doc(to).update({
-      paymentStatus: 'completed',
-      status: 'customer',
-      loyaltyPoints: admin.firestore.FieldValue.increment(10)
-    });
-
-    const userDoc = await db.collection('users').doc(to).get();
-    const userData = userDoc.data() || {};
-
-    await db.collection('orders').where('userId', '==', to)
-      .where('isTrial', '==', true)
-      .where('status', '==', 'pending')
-      .limit(1)
-      .get()
-      .then(async snapshot => {
-        if (!snapshot.empty) {
-          await snapshot.docs[0].ref.update({
-            status: 'completed',
-            paymentDate: admin.firestore.FieldValue.serverTimestamp(),
-            amount: paymentDetails.amount
-          });
+    switch (nextStage) {
+      case 'welcome':
+        if (text === 'welcome_continue') {
+          nextStage = 'product_selection';
+          await sendProductCatalog(from);
+        } else if (text === 'welcome_help') {
+          await sendMessage(from, "What can we help you with today?");
+          return;
+        } else {
+          await sendWelcomeMessage(from);
+          return;
         }
-      });
+        break;
 
-    let message = `Payment Verified!\n\n`;
-    message += `Thank you for your purchase.\n`;
-    message += `You've earned 10 loyalty points.\n\n`;
-    message += `Current points: ${userData.loyaltyPoints || 0}\n\n`;
-    message += `Would you like to leave feedback for a 5% discount on your next purchase?`;
-
-    const interactiveData = {
-      type: 'button',
-      body: {
-        text: message
-      },
-      action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'feedback_yes', title: 'Leave Feedback' } },
-          { type: 'reply', reply: { id: 'feedback_later', title: 'Maybe Later' } }
-        ]
-      }
-    };
-
-    await sendInteractiveMessage(to, interactiveData);
-
-    schedulePostPurchaseFollowups(to);
-  } catch (err) {
-    console.error('Payment verification error:', err);
-    await sendMessage(to, "Failed to verify payment. Please contact support.");
-  }
-}
-
-async function schedulePostPurchaseFollowups(userId) {
-  const followupIntervals = [
-    { days: 3 },
-    { days: 7 },
-    { days: 30 }
-  ];
-
-  for (const interval of followupIntervals) {
-    const delay = interval.days * 24 * 60 * 60 * 1000;
-
-    setTimeout(async () => {
-      const userDoc = await db.collection('users').doc(userId).get();
-      const userData = userDoc.data() || {};
-
-      if (userData.status === 'customer') {
-        await sendFollowupMessage(userId, userData, interval.days);
-      }
-    }, delay);
-  }
-}
-
-async function sendFollowupMessage(userId, userData, daysSincePurchase) {
-  try {
-    let message = `Hello ${userData.name || ''},\n\n`;
-    
-    if (daysSincePurchase === 3) {
-      message += `How is your new product working for you after 3 days of use?`;
-    } else if (daysSincePurchase === 7) {
-      message += `It's been a week since your purchase. Everything working well?`;
-    } else {
-      message += `It's been a month since your purchase. Would you like to check out our latest products?`;
-    }
-
-    const interactiveData = {
-      type: 'button',
-      body: {
-        text: message
-      },
-      action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'followup_ok', title: 'All Good' } },
-          { type: 'reply', reply: { id: 'followup_issues', title: 'Having Issues' } },
-          { type: 'reply', reply: { id: 'followup_products', title: 'See Products' } }
-        ]
-      }
-    };
-
-    await sendInteractiveMessage(userId, interactiveData);
-  } catch (err) {
-    console.error('Followup message error:', err);
-  }
-}
-
-async function createCase(userId, issueType) {
-  try {
-    const caseNumber = `CASE-${Math.floor(1000 + Math.random() * 9000)}`;
-    
-    await db.collection('cases').add({
-      caseNumber: caseNumber,
-      userId: userId,
-      issueType: issueType,
-      status: 'open',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    await db.collection('users').doc(userId).update({
-      caseNumber: caseNumber
-    });
-
-    await sendMessage(userId, `Case created: ${caseNumber}\n\nAn agent will contact you shortly.`);
-
-    assignCaseToAgent(caseNumber);
-  } catch (err) {
-    console.error('Case creation error:', err);
-    await sendMessage(userId, "Failed to create case. Please try again later.");
-  }
-}
-
-async function assignCaseToAgent(caseNumber) {
-  const agentsSnapshot = await db.collection('agents')
-    .where('available', '==', true)
-    .limit(1)
-    .get();
-
-  if (!agentsSnapshot.empty) {
-    const agent = agentsSnapshot.docs[0];
-    await agent.ref.update({ available: false });
-    
-    await db.collection('cases').where('caseNumber', '==', caseNumber)
-      .limit(1)
-      .get()
-      .then(async snapshot => {
-        if (!snapshot.empty) {
-          await snapshot.docs[0].ref.update({
-            assignedAgent: agent.id,
-            status: 'in-progress'
-          });
+      case 'product_selection':
+        if (text === 'catalog_yes') {
+          nextStage = 'address';
+          await requestAddress(from);
+        } else if (text === 'catalog_no') {
+          await sendProductCatalog(from);
+          return;
+        } else {
+          await sendProductCatalog(from);
+          return;
         }
-      });
-  }
-}
-
-async function updateDeliveryStatus(orderId, status) {
-  try {
-    const orderDoc = await db.collection('orders').doc(orderId).get();
-    if (!orderDoc.exists) return;
-
-    await orderDoc.ref.update({ status: status });
-    
-    const userId = orderDoc.data().userId;
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return;
-
-    let message = '';
-    switch (status) {
-      case 'started':
-        message = 'Your delivery is on the way.';
         break;
-      case 'at_gate':
-        message = 'Your delivery has arrived at the estate gate.';
+
+      case 'address':
+        if (text === 'address_yes') {
+          nextStage = 'house_number';
+          await requestHouseNumber(from);
+        } else if (text === 'address_no') {
+          nextStage = 'full_address';
+          await requestFullAddress(from);
+        } else {
+          await requestAddress(from);
+          return;
+        }
         break;
-      case 'delivered':
-        message = 'Your delivery is complete. Enjoy your product!';
+
+      case 'house_number':
+        if (text && text.length > 0) {
+          updateData.address = `Mountain View Estate, House ${text}`;
+          nextStage = 'delivery_date';
+          await requestDeliveryDate(from);
+        } else {
+          await requestHouseNumber(from);
+          return;
+        }
         break;
+
+      case 'full_address':
+        if (text && text.length > 10) {
+          updateData.address = text;
+          nextStage = 'delivery_date';
+          await requestDeliveryDate(from);
+        } else {
+          await sendMessage(from, "Please provide a complete address including street and town.");
+          return;
+        }
+        break;
+
+      case 'delivery_date':
+        if (text === 'delivery_today' || text === 'delivery_tomorrow') {
+          nextStage = 'delivery_time';
+          await requestDeliveryTime(from);
+        } else if (text === 'delivery_custom') {
+          await sendMessage(from, "Please enter your preferred delivery date (DD/MM/YYYY):");
+          return;
+        } else if (text.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
+          nextStage = 'delivery_time';
+          await requestDeliveryTime(from);
+        } else {
+          await requestDeliveryDate(from);
+          return;
+        }
+        break;
+
+      case 'delivery_time':
+        if (text === 'time_morning' || text === 'time_afternoon' || text === 'time_evening') {
+          nextStage = 'order_confirmation';
+          // For demo purposes, we're using a sample product
+          await confirmOrder(from, 'sample_product_id', userData);
+        } else {
+          await requestDeliveryTime(from);
+          return;
+        }
+        break;
+
+      case 'order_confirmation':
+        if (text === 'order_confirm_trial') {
+          // Create trial order
+          const orderId = await createOrder(from, 'sample_product_id', userData.address, true);
+          await sendTrialStartedMessage(from, "Premium Power Bank", new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+          nextStage = 'completed';
+        } else if (text === 'order_confirm_pay') {
+          // Create paid order
+          const orderId = await createOrder(from, 'sample_product_id', userData.address, false);
+          await sendPaymentInstructions(from, orderId, 2500);
+          nextStage = 'payment_pending';
+        } else if (text === 'order_cancel') {
+          await sendMessage(from, "Order cancelled. Let us know if you'd like to browse other products.");
+          nextStage = 'product_selection';
+          await sendProductCatalog(from);
+          return;
+        } else {
+          await confirmOrder(from, 'sample_product_id', userData);
+          return;
+        }
+        break;
+
+      case 'payment_pending':
+        if (text.startsWith('payment_confirm_')) {
+          const orderId = text.split('_')[2];
+          await db.collection('orders').doc(orderId).update({
+            paymentStatus: 'confirmed',
+            paidAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          await sendOrderConfirmation(from, orderId);
+          nextStage = 'completed';
+        } else if (text === 'payment_help') {
+          await sendMessage(from, "Please call 0700123456 for payment assistance.");
+          return;
+        } else {
+          // For demo, we'll assume any other message is payment confirmation
+          await sendMessage(from, "Please use the payment confirmation button to verify your payment.");
+          return;
+        }
+        break;
+
+      case 'completed':
+        await sendMessage(from, "Thank you for your business! If you need anything else, just let us know.");
+        break;
+
       default:
+        await sendWelcomeMessage(from);
         return;
     }
 
-    await sendMessage(userId, `Delivery Update: ${message}`);
+    updateData['onboarding.stage'] = nextStage;
+    updateData['onboarding.lastActive'] = admin.firestore.FieldValue.serverTimestamp();
+    
+    await userRef.update(updateData);
+    await updateGoogleSheet({
+      ...userData,
+      ...updateData,
+      phone: from
+    });
+
   } catch (err) {
-    console.error('Delivery status update error:', err);
+    console.error('Onboarding error:', err);
+    await sendMessage(from, "We encountered an error. Please try again or contact support.");
   }
 }
 
-app.get('/', (req, res) => res.send('Mountain View Electronics WhatsApp Bot running'));
+app.get('/', (req, res) => res.send('WhatsApp Bot running'));
 
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -1025,49 +813,24 @@ app.post('/webhook', async (req, res) => {
 
     const userRef = db.collection('users').doc(from);
     const userDoc = await userRef.get();
-    const userData = userDoc.exists ? userDoc.data() : null;
+    let userData = userDoc.exists ? userDoc.data() : null;
 
-    if (message.text?.body?.toLowerCase().trim() === 'menu') {
-      if (!userDoc.exists) {
-        await sendWelcomeMessage(from);
-      } else {
-        await sendProductCatalog(from);
-      }
-      return res.sendStatus(200);
-    }
-
-    if (message.text?.body?.toLowerCase().includes('case')) {
-      if (userData?.caseNumber) {
-        const caseDoc = await db.collection('cases').where('caseNumber', '==', userData.caseNumber).limit(1).get();
-        if (!caseDoc.empty) {
-          const caseData = caseDoc.docs[0].data();
-          await sendMessage(from, `Case ${caseData.caseNumber}\nStatus: ${caseData.status}\nAgent: ${caseData.assignedAgent || 'Not assigned'}`);
-        } else {
-          await sendMessage(from, "No active case found. Would you like to create one?");
-        }
-      } else {
-        await sendMessage(from, "No active case found. Would you like to create one?");
-      }
-      return res.sendStatus(200);
-    }
-
+    // Handle new user registration
     if (!userDoc.exists) {
-      await userRef.set({
-        phone: from,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        status: 'new'
-      });
+      await registerNewUser(from);
       await sendWelcomeMessage(from);
       return res.sendStatus(200);
     }
 
+    // Update last active timestamp
     await userRef.update({
       lastActive: admin.firestore.FieldValue.serverTimestamp()
     });
 
+    // Get message text
     let text = '';
     if (message.type === 'text') {
-      text = message.text?.body || '';
+      text = message.text?.body?.toLowerCase() || '';
     } else if (message.type === 'interactive') {
       if (message.interactive?.type === 'button_reply') {
         text = message.interactive.button_reply?.id || '';
@@ -1076,200 +839,28 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
+    // Check for greetings to start conversation
+    if (!userData.onboarding?.stage && ['hi', 'hello', 'hey'].includes(text)) {
+      await sendWelcomeMessage(from);
+      return res.sendStatus(200);
+    }
+
+    // Handle existing user flow
     if (userData.onboarding?.stage) {
-      await handleOnboardingStage(from, text, userData.onboarding.stage, userRef, userData);
+      await handleNewUserFlow(from, text, userRef, userData);
       return res.sendStatus(200);
     }
 
-    if (text.startsWith('product_')) {
-      const productId = text.replace('product_', '');
-      await sendProductDetails(from, productId);
-      return res.sendStatus(200);
-    }
+    // Handle returning customer requests
+    const aiResponse = await getAIResponse(text, from);
+    await sendMessage(from, aiResponse, true);
 
-    if (text.startsWith('book_')) {
-      const productId = text.replace('book_', '');
-      await requestDeliveryDetails(from, productId, true);
-      return res.sendStatus(200);
-    }
-
-    if (text.startsWith('buy_')) {
-      const productId = text.replace('buy_', '');
-      await requestDeliveryDetails(from, productId, false);
-      return res.sendStatus(200);
-    }
-
-    if (text === 'back_catalog') {
-      await sendProductCatalog(from);
-      return res.sendStatus(200);
-    }
-
-    if (text === 'payment_done') {
-      const productDoc = await db.collection('products').doc(userData.currentTrialProduct).get();
-      const product = productDoc.data() || {};
-      
-      await verifyPayment(from, {
-        amount: product.price,
-        method: 'M-Pesa'
-      });
-      return res.sendStatus(200);
-    }
-
-    if (text === 'feedback_yes') {
-      await sendMessage(from, "Please share your feedback about your purchase experience and product quality:");
-      await userRef.update({ 'onboarding.stage': 'feedback' });
-      return res.sendStatus(200);
-    }
-
-    if (text === 'followup_issues' || text === 'checkin_issues') {
-      await createCase(from, text === 'followup_issues' ? 'post_purchase_issue' : 'trial_issue');
-      return res.sendStatus(200);
-    }
-
-    if (userData.status === 'customer') {
-      const aiResponse = await getAIResponse(text, from);
-      await sendMessage(from, aiResponse, true);
-      return res.sendStatus(200);
-    }
-
-    await sendMessage(from, "Sorry, I didn't understand that. Type MENU to see options.");
     res.sendStatus(200);
   } catch (err) {
     console.error('Webhook error:', err);
     res.sendStatus(500);
   }
 });
-
-async function handleOnboardingStage(from, text, stage, userRef, userData) {
-  const updateData = {};
-  let nextStage = stage;
-
-  try {
-    switch (stage) {
-      case 'welcome':
-        if (text === 'welcome_yes') {
-          updateData.isEstateResident = true;
-          nextStage = 'product_catalog';
-          await sendProductCatalog(from);
-        } else if (text === 'welcome_no') {
-          updateData.isEstateResident = false;
-          nextStage = 'product_catalog';
-          await sendProductCatalog(from);
-        } else {
-          await sendWelcomeMessage(from);
-          return;
-        }
-        break;
-
-      case 'house_number':
-        if (text && text.match(/^[A-Za-z]?\d+$/)) {
-          updateData.houseNumber = text.toUpperCase();
-          const productId = userData.onboarding.productId;
-          const isTrial = userData.onboarding.isTrial;
-          nextStage = 'delivery_date';
-          await sendMessage(from, "Please enter your preferred delivery date (DD-MM-YYYY):");
-        } else {
-          await sendMessage(from, "Invalid house number format. Please use format like B42 or 42.");
-          return;
-        }
-        break;
-
-      case 'delivery_date':
-        if (text && text.match(/^\d{2}-\d{2}-\d{4}$/)) {
-          const productId = userData.onboarding.productId;
-          const isTrial = userData.onboarding.isTrial;
-          nextStage = 'delivery_time';
-          await requestDeliveryTime(from, productId, text, isTrial);
-        } else {
-          await sendMessage(from, "Invalid date format. Please use DD-MM-YYYY format.");
-          return;
-        }
-        break;
-
-      case 'delivery_time':
-        if (text.startsWith('time_')) {
-          const parts = text.split('_');
-          const timeSlot = parts[1];
-          const productId = parts[2];
-          const deliveryDate = userData.onboarding.deliveryDate;
-          const isTrial = userData.onboarding.isTrial;
-          
-          nextStage = 'order_confirmation';
-          await confirmOrder(from, productId, deliveryDate, timeSlot, isTrial);
-        } else {
-          const productId = userData.onboarding.productId;
-          const deliveryDate = userData.onboarding.deliveryDate;
-          const isTrial = userData.onboarding.isTrial;
-          await requestDeliveryTime(from, productId, deliveryDate, isTrial);
-          return;
-        }
-        break;
-
-      case 'order_confirmation':
-        if (text.startsWith('confirm_trial_')) {
-          const productId = text.replace('confirm_trial_', '');
-          const deliveryDate = userData.onboarding.deliveryDate;
-          const timeSlot = userData.onboarding.timeSlot;
-          
-          await startTrialPeriod(from, productId, deliveryDate, timeSlot);
-          nextStage = 'trial_active';
-        } else if (text.startsWith('confirm_payment_')) {
-          const productId = text.replace('confirm_payment_', '');
-          await requestPayment(from);
-          nextStage = 'payment_pending';
-        } else if (text === 'cancel_order') {
-          nextStage = '';
-          await sendMessage(from, "Order cancelled. Type MENU to browse products.");
-        } else {
-          const productId = userData.onboarding.productId;
-          const deliveryDate = userData.onboarding.deliveryDate;
-          const timeSlot = userData.onboarding.timeSlot;
-          const isTrial = userData.onboarding.isTrial;
-          await confirmOrder(from, productId, deliveryDate, timeSlot, isTrial);
-          return;
-        }
-        break;
-
-      case 'feedback':
-        if (text && text.length > 10) {
-          await db.collection('feedback').add({
-            userId: from,
-            feedback: text,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            discountEligible: true
-          });
-          
-          await sendMessage(from, "Thank you for your feedback! You've earned a 5% discount on your next purchase.");
-          nextStage = '';
-        } else {
-          await sendMessage(from, "Please provide more detailed feedback (at least 10 characters).");
-          return;
-        }
-        break;
-
-      default:
-        await sendMessage(from, "Sorry, I didn't understand that. Type MENU to see options.");
-        return;
-    }
-
-    if (nextStage) {
-      updateData['onboarding.stage'] = nextStage;
-    } else {
-      updateData['onboarding'] = admin.firestore.FieldValue.delete();
-    }
-    
-    await userRef.update(updateData);
-    await updateGoogleSheet({
-      ...userData,
-      ...updateData,
-      phone: from
-    });
-
-  } catch (err) {
-    console.error('Onboarding error:', err);
-    await sendMessage(from, "We encountered an error. Please try again or type MENU to restart.");
-  }
-}
 
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, '0.0.0.0', () => {
