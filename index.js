@@ -33,7 +33,7 @@ const db = admin.firestore();
 
 async function initializeCollections() {
   try {
-    const collections = ['products', 'users', 'orders', 'whatsapp_logs', 'complementary_items'];
+    const collections = ['products', 'users', 'orders', 'whatsapp_logs', 'complementary_items', 'trials'];
     for (const col of collections) {
       const snapshot = await db.collection(col).limit(1).get();
       if (snapshot.empty) {
@@ -168,6 +168,7 @@ async function sendProductCatalog(to) {
       };
     });
 
+    // Send first product with image
     const firstProduct = products[0];
     if (firstProduct.images && firstProduct.images.length > 0) {
       await sendImage(to, firstProduct.images[0], `${firstProduct.name}\nKES ${firstProduct.price}`);
@@ -175,6 +176,7 @@ async function sendProductCatalog(to) {
       await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nKES ${firstProduct.price}`);
     }
 
+    // Send remaining products as list
     if (products.length > 1) {
       const interactiveData = {
         type: 'list',
@@ -231,8 +233,14 @@ app.post('/webhook', async (req, res) => {
 
     console.log('Received message:', message.type, 'from:', from);
 
+    // Handle greetings
     if (message.type === 'text') {
       const text = message.text.body.toLowerCase().trim();
+      
+      if (['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening'].includes(text)) {
+        await handleGreeting(from);
+        return res.sendStatus(200);
+      }
       
       if (text === 'menu') {
         await sendWelcomeMessage(from);
@@ -257,7 +265,7 @@ app.post('/webhook', async (req, res) => {
             name: message.text.body,
             registrationStep: 'estate_number'
           });
-          await sendMessage(from, "Thank you. Now please send your estate house number:");
+          await sendMessage(from, "Thank you. Now please send your estate house number (e.g., Acacia 39):");
           return res.sendStatus(200);
         } else if (userData.registrationStep === 'estate_number') {
           await db.collection('users').doc(from).update({
@@ -303,9 +311,26 @@ app.post('/webhook', async (req, res) => {
       } else if (responseId.startsWith('buy_')) {
         const productId = responseId.replace('buy_', '');
         await initiatePurchase(from, productId);
+      } else if (responseId.startsWith('trial_')) {
+        const productId = responseId.replace('trial_', '');
+        await initiateTrial(from, productId);
       } else if (responseId.startsWith('confirm_purchase_')) {
-        const productId = responseId.replace('confirm_purchase_', '');
-        await confirmPurchase(from, productId);
+        const orderId = responseId.replace('confirm_purchase_', '');
+        await confirmPurchase(from, orderId);
+      } else if (responseId.startsWith('payment_')) {
+        const parts = responseId.split('_');
+        const orderId = parts[2];
+        const action = parts[1];
+        
+        if (action === 'paid') {
+          await db.collection('orders').doc(orderId).update({
+            paymentConfirmed: true,
+            paymentDate: admin.firestore.FieldValue.serverTimestamp()
+          });
+          await sendMessage(from, "Thank you for confirming your payment! We'll process your order shortly.");
+        } else if (action === 'later') {
+          await sendMessage(from, "No problem! Please confirm your payment when you've made it by typing 'status' later.");
+        }
       } else if (responseId === 'back_to_catalog') {
         await sendProductCatalog(from);
       }
@@ -317,6 +342,20 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(500);
   }
 });
+
+async function handleGreeting(to) {
+  try {
+    const userDoc = await db.collection('users').doc(to).get();
+    if (userDoc.exists && userDoc.data().name) {
+      await sendMessage(to, `Hello ${userDoc.data().name}! Welcome back to Froy. How can we assist you today?`);
+    } else {
+      await sendMessage(to, "Hello! Welcome to Froy. To get started, please type 'register' to create your account.");
+    }
+  } catch (error) {
+    console.error('Greeting error:', error);
+    await sendMessage(to, "Hello! Welcome to Froy.");
+  }
+}
 
 async function initiateRegistration(to) {
   try {
@@ -345,7 +384,7 @@ async function sendWelcomeMessage(to) {
     const interactiveData = {
       type: 'button',
       body: {
-        text: "Welcome to Froy!\nAre you a Mountain View Estate resident?"
+        text: "Welcome to Froy, partnering with Mountain View Electronics!\nAre you a Mountain View Estate resident?"
       },
       action: {
         buttons: [
@@ -357,7 +396,7 @@ async function sendWelcomeMessage(to) {
     await sendInteractiveMessage(to, interactiveData);
   } catch (error) {
     console.error('Welcome message error:', error);
-    await sendMessage(to, "Welcome! Please type 'menu' to see options.");
+    await sendMessage(to, "Welcome! How can we assist you today?");
   }
 }
 
@@ -373,6 +412,7 @@ async function sendProductDetails(to, productId) {
     const userDoc = await db.collection('users').doc(to).get();
     const isResident = userDoc.exists ? userDoc.data().isEstateResident : false;
 
+    // Send product image if available
     if (product.images && product.images.length > 0) {
       await sendImage(to, product.images[0], `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
     } else {
@@ -380,7 +420,7 @@ async function sendProductDetails(to, productId) {
     }
 
     if (isResident) {
-      await sendMessage(to, "As a resident, you qualify for a free trial!");
+      await sendMessage(to, "As a resident, you qualify for a 7-day free trial of this product!");
     }
 
     const interactiveData = {
@@ -391,9 +431,8 @@ async function sendProductDetails(to, productId) {
           { type: 'reply', reply: { id: `more_images_${productId}`, title: 'See More Images' } },
           isResident ? 
             { type: 'reply', reply: { id: `trial_${productId}`, title: 'Start Free Trial' } } :
-            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
-          { type: 'reply', reply: { id: 'back_to_catalog', title: 'Back to Catalog' } }
-        ]
+            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } }
+          ]
       }
     };
 
@@ -457,18 +496,20 @@ async function initiatePurchase(to, productId) {
       estateNumber: userData.estateNumber || '',
       status: 'pending_payment',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      paymentCompleted: false,
-      deliveryStatus: 'pending'
+      paymentConfirmed: false,
+      deliveryStatus: 'pending',
+      isTrial: false
     });
 
     const interactiveData = {
       type: 'button',
       body: { 
-        text: `Confirm purchase of ${product.name} for KES ${product.price}?\n\nPay to: 1234567890\nBank: Example Bank\nAccount Name: Froy`
+        text: `Purchase ${product.name} for KES ${product.price}\n\nPay to: 123456\nTill Number: 54321\nName: Froy\n\nOnce paid, please confirm below:`
       },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: `confirm_purchase_${orderRef.id}`, title: 'Confirm Payment' } },
+          { type: 'reply', reply: { id: `payment_paid_${orderRef.id}`, title: 'I Have Paid' } },
+          { type: 'reply', reply: { id: `payment_later_${orderRef.id}`, title: 'I'll Pay Later' } },
           { type: 'reply', reply: { id: 'cancel_purchase', title: 'Cancel' } }
         ]
       }
@@ -481,10 +522,88 @@ async function initiatePurchase(to, productId) {
   }
 }
 
+async function initiateTrial(to, productId) {
+  try {
+    const productDoc = await db.collection('products').doc(productId).get();
+    if (!productDoc.exists) {
+      await sendMessage(to, "Product not available for trial.");
+      return;
+    }
+
+    const product = productDoc.data();
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+
+    // Check if user already has an active trial
+    const activeTrial = await db.collection('trials')
+      .where('customerPhone', '==', to)
+      .where('status', '==', 'active')
+      .get();
+
+    if (!activeTrial.empty) {
+      await sendMessage(to, "You already have an active trial. Please complete that before starting a new one.");
+      return;
+    }
+
+    const trialRef = await db.collection('trials').add({
+      productId: productId,
+      productName: product.name,
+      customerPhone: to,
+      customerName: userData.name || '',
+      estateNumber: userData.estateNumber || '',
+      status: 'pending',
+      startDate: admin.firestore.FieldValue.serverTimestamp(),
+      endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await db.collection('orders').add({
+      productId: productId,
+      productName: product.name,
+      price: 0,
+      customerPhone: to,
+      customerName: userData.name || '',
+      estateNumber: userData.estateNumber || '',
+      status: 'trial_started',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      paymentConfirmed: true,
+      deliveryStatus: 'pending',
+      isTrial: true,
+      trialId: trialRef.id
+    });
+
+    await sendMessage(to, `Your 7-day free trial for ${product.name} has been started! We'll contact you for delivery details.`);
+    
+    // Send product education
+    await sendProductEducation(to, productId);
+  } catch (error) {
+    console.error('Trial initiation error:', error);
+    await sendMessage(to, "Failed to start trial. Please try again.");
+  }
+}
+
+async function sendProductEducation(to, productId) {
+  try {
+    // In a real implementation, you would use the OPENROUTER_API_KEY to get AI-generated content
+    // For this example, we'll use static content
+    const educationPoints = [
+      "• Charge fully before first use",
+      "• Avoid extreme temperatures",
+      "• Use included cable for fastest charging",
+      "• LED indicators show remaining power",
+      "• Compatible with most USB devices"
+    ];
+    
+    await sendMessage(to, `Product Tips for Best Experience:\n\n${educationPoints.join('\n')}`);
+  } catch (error) {
+    console.error('Product education error:', error);
+  }
+}
+
 async function confirmPurchase(to, orderId) {
   try {
     await db.collection('orders').doc(orderId).update({
-      paymentCompleted: true,
+      paymentConfirmed: true,
       paymentDate: admin.firestore.FieldValue.serverTimestamp(),
       status: 'payment_received'
     });
@@ -549,7 +668,7 @@ async function checkLoyaltyPoints(to) {
     }
 
     const points = userDoc.data().loyaltyPoints || 0;
-    await sendMessage(to, `You have ${points} loyalty points. Earn more by referring friends and reviewing products!`);
+    await sendMessage(to, `You have ${points} loyalty points. Earn 10 points for each purchase and 5 points for referrals!`);
   } catch (error) {
     console.error('Loyalty points check error:', error);
     await sendMessage(to, "Failed to check your loyalty points. Please try again later.");
@@ -570,7 +689,21 @@ async function checkOrderStatus(to) {
     }
 
     const order = orders.docs[0].data();
-    await sendMessage(to, `Order status: ${order.status}\nDelivery status: ${order.deliveryStatus}\nProduct: ${order.productName}`);
+    let statusMessage = `Order: ${order.productName}\nStatus: ${order.status}`;
+    
+    if (order.isTrial) {
+      statusMessage += "\nType: Free Trial";
+      if (order.status === 'trial_started') {
+        const trialDoc = await db.collection('trials').doc(order.trialId).get();
+        if (trialDoc.exists) {
+          const trialData = trialDoc.data();
+          const endDate = trialData.endDate.toDate();
+          statusMessage += `\nTrial ends: ${endDate.toLocaleDateString()}`;
+        }
+      }
+    }
+    
+    await sendMessage(to, statusMessage);
   } catch (error) {
     console.error('Order status check error:', error);
     await sendMessage(to, "Failed to check your order status. Please try again later.");
