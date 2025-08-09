@@ -33,7 +33,7 @@ const db = admin.firestore();
 
 async function initializeCollections() {
   try {
-    const collections = ['products', 'users', 'orders', 'whatsapp_logs', 'complementary_items', 'trials'];
+    const collections = ['products', 'users', 'orders', 'whatsapp_logs', 'complementary_items', 'trials', 'conversations'];
     for (const col of collections) {
       const snapshot = await db.collection(col).limit(1).get();
       if (snapshot.empty) {
@@ -72,6 +72,40 @@ const transporter = nodemailer.createTransport({
   auth: { user: EMAIL_USER, pass: EMAIL_PASS }
 });
 
+// AI Response Generator
+async function generateAIResponse(prompt, context = "") {
+  try {
+    const response = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: "openai/gpt-3.5-turbo",
+        messages: [
+          {
+            role: "system",
+            content: `You are a helpful assistant for Froy, partnering with Mountain View Electronics. ${context} Keep responses concise (1-2 sentences max).`
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        max_tokens: 150
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data.choices[0].message.content.trim();
+  } catch (error) {
+    console.error('AI generation error:', error.response?.data || error.message);
+    return "I'm having trouble understanding. Could you please rephrase that?";
+  }
+}
+
+// Message sending functions with improved error handling
 async function sendMessage(to, text) {
   try {
     const response = await axios.post(
@@ -124,6 +158,8 @@ async function sendInteractiveMessage(to, interactiveData) {
 
 async function sendImage(to, imageUrl, caption = '') {
   try {
+    // Ensure the URL is properly encoded
+    const encodedUrl = encodeURI(imageUrl);
     const response = await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -132,8 +168,8 @@ async function sendImage(to, imageUrl, caption = '') {
         to: to,
         type: 'image',
         image: {
-          link: imageUrl,
-          caption: caption
+          link: encodedUrl,
+          caption: caption.substring(0, 1024) // WhatsApp caption limit
         }
       },
       {
@@ -150,6 +186,7 @@ async function sendImage(to, imageUrl, caption = '') {
   }
 }
 
+// Product catalog with image handling
 async function sendProductCatalog(to) {
   try {
     const snapshot = await db.collection('products').where('active', '==', true).get();
@@ -171,7 +208,12 @@ async function sendProductCatalog(to) {
     // Send first product with image
     const firstProduct = products[0];
     if (firstProduct.images && firstProduct.images.length > 0) {
-      await sendImage(to, firstProduct.images[0], `${firstProduct.name}\nKES ${firstProduct.price}`);
+      try {
+        await sendImage(to, firstProduct.images[0], `${firstProduct.name}\nKES ${firstProduct.price}`);
+      } catch (imageError) {
+        console.error('Failed to send image, falling back to text:', imageError);
+        await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nKES ${firstProduct.price}`);
+      }
     } else {
       await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nKES ${firstProduct.price}`);
     }
@@ -208,6 +250,7 @@ async function sendProductCatalog(to) {
   }
 }
 
+// Webhook handlers
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -232,6 +275,13 @@ app.post('/webhook', async (req, res) => {
     }
 
     console.log('Received message:', message.type, 'from:', from);
+
+    // Store conversation context
+    const conversationRef = db.collection('conversations').doc(from);
+    await conversationRef.set({
+      lastMessage: message.type === 'text' ? message.text.body : message.type,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
 
     // Handle greetings
     if (message.type === 'text') {
@@ -277,6 +327,11 @@ app.post('/webhook', async (req, res) => {
           return res.sendStatus(200);
         }
       }
+
+      // Handle general conversation with AI
+      const aiResponse = await generateAIResponse(text, "You're helping a customer with Froy products.");
+      await sendMessage(from, aiResponse);
+      return res.sendStatus(200);
     }
 
     if (message.type === 'interactive') {
@@ -333,6 +388,9 @@ app.post('/webhook', async (req, res) => {
         }
       } else if (responseId === 'back_to_catalog') {
         await sendProductCatalog(from);
+      } else if (responseId.startsWith('video_')) {
+        const productId = responseId.replace('video_', '');
+        await sendProductVideo(from, productId);
       }
     }
 
@@ -414,7 +472,12 @@ async function sendProductDetails(to, productId) {
 
     // Send product image if available
     if (product.images && product.images.length > 0) {
-      await sendImage(to, product.images[0], `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
+      try {
+        await sendImage(to, product.images[0], `${product.name}\nKES ${product.price}`);
+      } catch (imageError) {
+        console.error('Failed to send image, falling back to text:', imageError);
+        await sendMessage(to, `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
+      }
     } else {
       await sendMessage(to, `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
     }
@@ -431,8 +494,9 @@ async function sendProductDetails(to, productId) {
           { type: 'reply', reply: { id: `more_images_${productId}`, title: 'See More Images' } },
           isResident ? 
             { type: 'reply', reply: { id: `trial_${productId}`, title: 'Start Free Trial' } } :
-            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } }
-          ]
+            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
+          { type: 'reply', reply: { id: 'back_to_catalog', title: 'Back to Catalog' } }
+        ]
       }
     };
 
@@ -453,8 +517,12 @@ async function sendAdditionalImages(to, productId) {
 
     const images = doc.data().images.slice(1);
     for (const imageUrl of images) {
-      await sendImage(to, imageUrl);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        await sendImage(to, imageUrl);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Delay between images
+      } catch (imageError) {
+        console.error('Failed to send image:', imageError);
+      }
     }
 
     const interactiveData = {
@@ -472,6 +540,21 @@ async function sendAdditionalImages(to, productId) {
   } catch (error) {
     console.error('Additional images error:', error);
     await sendMessage(to, "Failed to load additional images. Please try again.");
+  }
+}
+
+async function sendProductVideo(to, productId) {
+  try {
+    const doc = await db.collection('products').doc(productId).get();
+    if (!doc.exists || !doc.data().video) {
+      await sendMessage(to, "No video available for this product.");
+      return;
+    }
+
+    await sendMessage(to, `Here's the product video: ${doc.data().video}`);
+  } catch (error) {
+    console.error('Product video error:', error);
+    await sendMessage(to, "Failed to load product video. Please try again.");
   }
 }
 
@@ -574,29 +657,13 @@ async function initiateTrial(to, productId) {
 
     await sendMessage(to, `Your 7-day free trial for ${product.name} has been started! We'll contact you for delivery details.`);
     
-    // Send product education
-    await sendProductEducation(to, productId);
+    // Send AI-generated product education
+    const educationPrompt = `Generate 3-5 short bullet points (max 200 characters total) about how to use ${product.name} (${product.description}) for best results.`;
+    const educationPoints = await generateAIResponse(educationPrompt, "You're providing product usage tips.");
+    await sendMessage(to, `Product Tips:\n\n${educationPoints}`);
   } catch (error) {
     console.error('Trial initiation error:', error);
     await sendMessage(to, "Failed to start trial. Please try again.");
-  }
-}
-
-async function sendProductEducation(to, productId) {
-  try {
-    // In a real implementation, you would use the OPENROUTER_API_KEY to get AI-generated content
-    // For this example, we'll use static content
-    const educationPoints = [
-      "• Charge fully before first use",
-      "• Avoid extreme temperatures",
-      "• Use included cable for fastest charging",
-      "• LED indicators show remaining power",
-      "• Compatible with most USB devices"
-    ];
-    
-    await sendMessage(to, `Product Tips for Best Experience:\n\n${educationPoints.join('\n')}`);
-  } catch (error) {
-    console.error('Product education error:', error);
   }
 }
 
@@ -625,7 +692,11 @@ async function confirmPurchase(to, orderId) {
         for (const item of complementaryItems.docs) {
           const itemData = item.data();
           if (itemData.image) {
-            await sendImage(to, itemData.image, `${itemData.name}\n${itemData.description}`);
+            try {
+              await sendImage(to, itemData.image, `${itemData.name}\n${itemData.description}`);
+            } catch (imageError) {
+              await sendMessage(to, `${itemData.name}\n${itemData.description}`);
+            }
           } else {
             await sendMessage(to, `${itemData.name}\n${itemData.description}`);
           }
