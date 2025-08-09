@@ -31,10 +31,9 @@ rawConfig.private_key = rawConfig.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({ credential: admin.credential.cert(rawConfig) });
 const db = admin.firestore();
 
-// Initialize collections with proper error handling
 async function initializeCollections() {
   try {
-    const collections = ['products', 'users', 'orders', 'whatsapp_logs'];
+    const collections = ['products', 'users', 'orders', 'whatsapp_logs', 'complementary_items'];
     for (const col of collections) {
       const snapshot = await db.collection(col).limit(1).get();
       if (snapshot.empty) {
@@ -46,6 +45,14 @@ async function initializeCollections() {
             images: ["https://example.com/powerbank.jpg"],
             active: true,
             createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        } else if (col === 'complementary_items') {
+          await db.collection(col).add({
+            name: "Wireless Earphones",
+            description: "Bluetooth 5.0",
+            product_id: "powerbank123",
+            image: "https://example.com/earphones.jpg",
+            active: true
           });
         } else {
           await db.collection(col).add({ initialized: true });
@@ -65,7 +72,6 @@ const transporter = nodemailer.createTransport({
   auth: { user: EMAIL_USER, pass: EMAIL_PASS }
 });
 
-// WhatsApp message functions with improved error handling
 async function sendMessage(to, text) {
   try {
     const response = await axios.post(
@@ -116,7 +122,34 @@ async function sendInteractiveMessage(to, interactiveData) {
   }
 }
 
-// Product catalog with proper error handling
+async function sendImage(to, imageUrl, caption = '') {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: to,
+        type: 'image',
+        image: {
+          link: imageUrl,
+          caption: caption
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Image sending error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
 async function sendProductCatalog(to) {
   try {
     const snapshot = await db.collection('products').where('active', '==', true).get();
@@ -135,13 +168,13 @@ async function sendProductCatalog(to) {
       };
     });
 
-    // Send first product details
     const firstProduct = products[0];
-    await sendMessage(to, 
-      `${firstProduct.title}\n${firstProduct.description}\n${firstProduct.details || ''}`
-    );
+    if (firstProduct.images && firstProduct.images.length > 0) {
+      await sendImage(to, firstProduct.images[0], `${firstProduct.name}\nKES ${firstProduct.price}`);
+    } else {
+      await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nKES ${firstProduct.price}`);
+    }
 
-    // Prepare interactive list for remaining products
     if (products.length > 1) {
       const interactiveData = {
         type: 'list',
@@ -173,7 +206,6 @@ async function sendProductCatalog(to) {
   }
 }
 
-// Webhook handlers
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -199,17 +231,24 @@ app.post('/webhook', async (req, res) => {
 
     console.log('Received message:', message.type, 'from:', from);
 
-    // Handle text messages
     if (message.type === 'text') {
       const text = message.text.body.toLowerCase().trim();
       
       if (text === 'menu') {
         await sendWelcomeMessage(from);
         return res.sendStatus(200);
+      } else if (text === 'register') {
+        await initiateRegistration(from);
+        return res.sendStatus(200);
+      } else if (text === 'status') {
+        await checkOrderStatus(from);
+        return res.sendStatus(200);
+      } else if (text === 'points') {
+        await checkLoyaltyPoints(from);
+        return res.sendStatus(200);
       }
     }
 
-    // Handle interactive messages
     if (message.type === 'interactive') {
       const interactiveType = message.interactive.type;
       let responseId = '';
@@ -226,10 +265,29 @@ app.post('/webhook', async (req, res) => {
           phone: from,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
-        await sendProductCatalog(from);
+        
+        const userDoc = await db.collection('users').doc(from).get();
+        if (!userDoc.exists || !userDoc.data().name) {
+          await initiateRegistration(from);
+        } else {
+          await sendProductCatalog(from);
+        }
       } else if (responseId.startsWith('product_')) {
         const productId = responseId.replace('product_', '');
         await sendProductDetails(from, productId);
+      } else if (responseId.startsWith('more_images_')) {
+        const productId = responseId.replace('more_images_', '');
+        await sendAdditionalImages(from, productId);
+      } else if (responseId.startsWith('buy_')) {
+        const productId = responseId.replace('buy_', '');
+        await initiatePurchase(from, productId);
+      } else if (responseId.startsWith('confirm_purchase_')) {
+        const productId = responseId.replace('confirm_purchase_', '');
+        await confirmPurchase(from, productId);
+      } else if (responseId === 'back_to_catalog') {
+        await sendProductCatalog(from);
+      } else if (responseId.startsWith('register_')) {
+        await handleRegistrationStep(from, responseId);
       }
     }
 
@@ -240,9 +298,60 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Welcome message with working buttons
+async function initiateRegistration(to) {
+  try {
+    await sendMessage(to, "Let's get you registered. Please reply with your full name:");
+    
+    await db.collection('users').doc(to).set({
+      registrationStep: 'name',
+      phone: to,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  } catch (error) {
+    console.error('Registration initiation error:', error);
+    await sendMessage(to, "Registration failed. Please try again later.");
+  }
+}
+
+async function handleRegistrationStep(to, responseId) {
+  try {
+    const userDoc = await db.collection('users').doc(to).get();
+    if (!userDoc.exists) {
+      await sendMessage(to, "Please start registration by sending 'register'");
+      return;
+    }
+
+    const userData = userDoc.data();
+    
+    if (responseId === 'register_name') {
+      await db.collection('users').doc(to).update({
+        name: message.text.body,
+        registrationStep: 'estate_number'
+      });
+      await sendMessage(to, "Thank you. Now please send your estate house number:");
+    } else if (responseId === 'register_estate_number') {
+      await db.collection('users').doc(to).update({
+        estateNumber: message.text.body,
+        registrationStep: 'complete',
+        registrationCompleted: true
+      });
+      await sendMessage(to, "Registration complete! Type 'menu' to browse products.");
+    }
+  } catch (error) {
+    console.error('Registration step error:', error);
+    await sendMessage(to, "Registration failed. Please try again.");
+  }
+}
+
 async function sendWelcomeMessage(to) {
   try {
+    const userDoc = await db.collection('users').doc(to).get();
+    
+    if (userDoc.exists && userDoc.data().registrationCompleted) {
+      await sendProductCatalog(to);
+      return;
+    }
+
     const interactiveData = {
       type: 'button',
       body: {
@@ -262,7 +371,6 @@ async function sendWelcomeMessage(to) {
   }
 }
 
-// Product details function
 async function sendProductDetails(to, productId) {
   try {
     const doc = await db.collection('products').doc(productId).get();
@@ -275,20 +383,25 @@ async function sendProductDetails(to, productId) {
     const userDoc = await db.collection('users').doc(to).get();
     const isResident = userDoc.exists ? userDoc.data().isEstateResident : false;
 
-    let message = `${product.name}\n${product.description}\nPrice: KES ${product.price}`;
+    if (product.images && product.images.length > 0) {
+      await sendImage(to, product.images[0], `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
+    } else {
+      await sendMessage(to, `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
+    }
+
     if (isResident) {
-      message += "\n\nAs a resident, you qualify for a free trial!";
+      await sendMessage(to, "As a resident, you qualify for a free trial!");
     }
 
     const interactiveData = {
       type: 'button',
-      body: { text: message },
+      body: { text: "What would you like to do?" },
       action: {
-        buttons: isResident ? [
-          { type: 'reply', reply: { id: `trial_${productId}`, title: 'Start Free Trial' } },
-          { type: 'reply', reply: { id: 'back_to_catalog', title: 'Back to Catalog' } }
-        ] : [
-          { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
+        buttons: [
+          { type: 'reply', reply: { id: `more_images_${productId}`, title: 'See More Images' } },
+          isResident ? 
+            { type: 'reply', reply: { id: `trial_${productId}`, title: 'Start Free Trial' } } :
+            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
           { type: 'reply', reply: { id: 'back_to_catalog', title: 'Back to Catalog' } }
         ]
       }
@@ -298,6 +411,179 @@ async function sendProductDetails(to, productId) {
   } catch (error) {
     console.error('Product details error:', error);
     await sendMessage(to, "Couldn't load product details. Please try again.");
+  }
+}
+
+async function sendAdditionalImages(to, productId) {
+  try {
+    const doc = await db.collection('products').doc(productId).get();
+    if (!doc.exists || !doc.data().images || doc.data().images.length <= 1) {
+      await sendMessage(to, "No additional images available for this product.");
+      return;
+    }
+
+    const images = doc.data().images.slice(1);
+    for (const imageUrl of images) {
+      await sendImage(to, imageUrl);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    const interactiveData = {
+      type: 'button',
+      body: { text: "Would you like to see a video of this product in action?" },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: `video_${productId}`, title: 'Yes, Show Video' } },
+          { type: 'reply', reply: { id: `back_to_product_${productId}`, title: 'No, Go Back' } }
+        ]
+      }
+    };
+
+    await sendInteractiveMessage(to, interactiveData);
+  } catch (error) {
+    console.error('Additional images error:', error);
+    await sendMessage(to, "Failed to load additional images. Please try again.");
+  }
+}
+
+async function initiatePurchase(to, productId) {
+  try {
+    const productDoc = await db.collection('products').doc(productId).get();
+    if (!productDoc.exists) {
+      await sendMessage(to, "Product not available for purchase.");
+      return;
+    }
+
+    const product = productDoc.data();
+    const userDoc = await db.collection('users').doc(to).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+
+    const orderRef = await db.collection('orders').add({
+      productId: productId,
+      productName: product.name,
+      price: product.price,
+      customerPhone: to,
+      customerName: userData.name || '',
+      estateNumber: userData.estateNumber || '',
+      status: 'pending_payment',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      paymentCompleted: false,
+      deliveryStatus: 'pending'
+    });
+
+    const interactiveData = {
+      type: 'button',
+      body: { 
+        text: `Confirm purchase of ${product.name} for KES ${product.price}?\n\nPay to: 1234567890\nBank: Example Bank\nAccount Name: Mountain View Electronics`
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: `confirm_purchase_${orderRef.id}`, title: 'Confirm Payment' } },
+          { type: 'reply', reply: { id: 'cancel_purchase', title: 'Cancel' } }
+        ]
+      }
+    };
+
+    await sendInteractiveMessage(to, interactiveData);
+  } catch (error) {
+    console.error('Purchase initiation error:', error);
+    await sendMessage(to, "Failed to initiate purchase. Please try again.");
+  }
+}
+
+async function confirmPurchase(to, orderId) {
+  try {
+    await db.collection('orders').doc(orderId).update({
+      paymentCompleted: true,
+      paymentDate: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'payment_received'
+    });
+
+    await sendMessage(to, "Thank you for your payment! We'll process your order shortly. You'll receive updates on your delivery status.");
+    
+    const orderDoc = await db.collection('orders').doc(orderId).get();
+    const productDoc = await db.collection('products').doc(orderDoc.data().productId).get();
+    
+    if (productDoc.exists) {
+      const complementaryItems = await db.collection('complementary_items')
+        .where('product_id', '==', orderDoc.data().productId)
+        .where('active', '==', true)
+        .get();
+      
+      if (!complementaryItems.empty) {
+        await sendMessage(to, "Recommended complementary items:");
+        
+        for (const item of complementaryItems.docs) {
+          const itemData = item.data();
+          if (itemData.image) {
+            await sendImage(to, itemData.image, `${itemData.name}\n${itemData.description}`);
+          } else {
+            await sendMessage(to, `${itemData.name}\n${itemData.description}`);
+          }
+        }
+      }
+    }
+
+    await updateLoyaltyPoints(to, 10, 'purchase');
+  } catch (error) {
+    console.error('Purchase confirmation error:', error);
+    await sendMessage(to, "Failed to confirm your payment. Please contact support.");
+  }
+}
+
+async function updateLoyaltyPoints(to, points, reason) {
+  try {
+    const userRef = db.collection('users').doc(to);
+    await userRef.update({
+      loyaltyPoints: admin.firestore.FieldValue.increment(points),
+      lastActivity: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await db.collection('loyalty_logs').add({
+      userPhone: to,
+      points: points,
+      reason: reason,
+      date: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Loyalty points update error:', error);
+  }
+}
+
+async function checkLoyaltyPoints(to) {
+  try {
+    const userDoc = await db.collection('users').doc(to).get();
+    if (!userDoc.exists) {
+      await sendMessage(to, "You're not registered yet. Type 'register' to get started.");
+      return;
+    }
+
+    const points = userDoc.data().loyaltyPoints || 0;
+    await sendMessage(to, `You have ${points} loyalty points. Earn more by referring friends and reviewing products!`);
+  } catch (error) {
+    console.error('Loyalty points check error:', error);
+    await sendMessage(to, "Failed to check your loyalty points. Please try again later.");
+  }
+}
+
+async function checkOrderStatus(to) {
+  try {
+    const orders = await db.collection('orders')
+      .where('customerPhone', '==', to)
+      .orderBy('createdAt', 'desc')
+      .limit(1)
+      .get();
+
+    if (orders.empty) {
+      await sendMessage(to, "No orders found for your account.");
+      return;
+    }
+
+    const order = orders.docs[0].data();
+    await sendMessage(to, `Order status: ${order.status}\nDelivery status: ${order.deliveryStatus}\nProduct: ${order.productName}`);
+  } catch (error) {
+    console.error('Order status check error:', error);
+    await sendMessage(to, "Failed to check your order status. Please try again later.");
   }
 }
 
