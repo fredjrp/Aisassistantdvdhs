@@ -509,7 +509,7 @@ async function initiatePurchase(to, productId) {
       action: {
         buttons: [
           { type: 'reply', reply: { id: `payment_paid_${orderRef.id}`, title: 'I Have Paid' } },
-          { type: 'reply', reply: { id: `payment_later_${orderRef.id}`, title: 'I'll Pay Later' } },
+          { type: 'reply', reply: { id: `payment_later_${orderRef.id}`, title: 'I will Pay Later' } },
           { type: 'reply', reply: { id: 'cancel_purchase', title: 'Cancel' } }
         ]
       }
