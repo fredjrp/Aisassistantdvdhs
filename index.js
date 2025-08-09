@@ -247,6 +247,28 @@ app.post('/webhook', async (req, res) => {
         await checkLoyaltyPoints(from);
         return res.sendStatus(200);
       }
+
+      // Handle registration text responses
+      const userDoc = await db.collection('users').doc(from).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData.registrationStep === 'name') {
+          await db.collection('users').doc(from).update({
+            name: message.text.body,
+            registrationStep: 'estate_number'
+          });
+          await sendMessage(from, "Thank you. Now please send your estate house number:");
+          return res.sendStatus(200);
+        } else if (userData.registrationStep === 'estate_number') {
+          await db.collection('users').doc(from).update({
+            estateNumber: message.text.body,
+            registrationStep: 'complete',
+            registrationCompleted: true
+          });
+          await sendMessage(from, "Registration complete! Type 'menu' to browse products.");
+          return res.sendStatus(200);
+        }
+      }
     }
 
     if (message.type === 'interactive') {
@@ -286,8 +308,6 @@ app.post('/webhook', async (req, res) => {
         await confirmPurchase(from, productId);
       } else if (responseId === 'back_to_catalog') {
         await sendProductCatalog(from);
-      } else if (responseId.startsWith('register_')) {
-        await handleRegistrationStep(from, responseId);
       }
     }
 
@@ -313,36 +333,6 @@ async function initiateRegistration(to) {
   }
 }
 
-async function handleRegistrationStep(to, responseId) {
-  try {
-    const userDoc = await db.collection('users').doc(to).get();
-    if (!userDoc.exists) {
-      await sendMessage(to, "Please start registration by sending 'register'");
-      return;
-    }
-
-    const userData = userDoc.data();
-    
-    if (responseId === 'register_name') {
-      await db.collection('users').doc(to).update({
-        name: message.text.body,
-        registrationStep: 'estate_number'
-      });
-      await sendMessage(to, "Thank you. Now please send your estate house number:");
-    } else if (responseId === 'register_estate_number') {
-      await db.collection('users').doc(to).update({
-        estateNumber: message.text.body,
-        registrationStep: 'complete',
-        registrationCompleted: true
-      });
-      await sendMessage(to, "Registration complete! Type 'menu' to browse products.");
-    }
-  } catch (error) {
-    console.error('Registration step error:', error);
-    await sendMessage(to, "Registration failed. Please try again.");
-  }
-}
-
 async function sendWelcomeMessage(to) {
   try {
     const userDoc = await db.collection('users').doc(to).get();
@@ -355,7 +345,7 @@ async function sendWelcomeMessage(to) {
     const interactiveData = {
       type: 'button',
       body: {
-        text: "Welcome to Mountain View Electronics!\nAre you a Mountain View Estate resident?"
+        text: "Welcome to Froy!\nAre you a Mountain View Estate resident?"
       },
       action: {
         buttons: [
@@ -474,7 +464,7 @@ async function initiatePurchase(to, productId) {
     const interactiveData = {
       type: 'button',
       body: { 
-        text: `Confirm purchase of ${product.name} for KES ${product.price}?\n\nPay to: 1234567890\nBank: Example Bank\nAccount Name: Mountain View Electronics`
+        text: `Confirm purchase of ${product.name} for KES ${product.price}?\n\nPay to: 1234567890\nBank: Example Bank\nAccount Name: Froy`
       },
       action: {
         buttons: [
