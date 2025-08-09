@@ -23,7 +23,8 @@ const {
   PHONE_NUMBER_ID,
   OPENROUTER_API_KEY,
   EMAIL_USER,
-  EMAIL_PASS
+  EMAIL_PASS,
+  TILL_NUMBER
 } = process.env;
 
 const rawConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -44,7 +45,8 @@ async function initializeCollections() {
             price: 3500,
             images: ["https://example.com/powerbank.jpg"],
             active: true,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            user_guide: "1. Charge fully before first use\n2. Use included cable for best results\n3. LED lights show battery level"
           });
         } else if (col === 'complementary_items') {
           await db.collection(col).add({
@@ -72,9 +74,46 @@ const transporter = nodemailer.createTransport({
   auth: { user: EMAIL_USER, pass: EMAIL_PASS }
 });
 
-// AI Response Generator
-async function generateAIResponse(prompt, context = "") {
+// AI Response Generator with Firebase context
+async function generateAIResponse(prompt, phoneNumber, context = "") {
   try {
+    // Get user data from Firebase
+    const userDoc = await db.collection('users').doc(phoneNumber).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+    
+    // Get active products
+    const productsSnapshot = await db.collection('products').where('active', '==', true).get();
+    const products = productsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    // Get user's orders
+    const ordersSnapshot = await db.collection('orders').where('customerPhone', '==', phoneNumber).orderBy('createdAt', 'desc').limit(3).get();
+    const orders = ordersSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    // Build context from Firebase data
+    const firebaseContext = `
+      User Data:
+      - Name: ${userData.name || 'Not provided'}
+      - Estate Resident: ${userData.isEstateResident ? 'Yes' : 'No'}
+      - Estate Number: ${userData.estateNumber || 'Not provided'}
+      
+      Available Products:
+      ${products.map(p => `- ${p.name}: KES ${p.price} (${p.description})`).join('\n')}
+      
+      User's Recent Orders:
+      ${orders.length > 0 ? orders.map(o => `- ${o.productName}: ${o.status}`).join('\n') : 'No recent orders'}
+      
+      Payment Information:
+      - Till Number: ${TILL_NUMBER}
+      
+      ${context}
+    `;
+
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
@@ -82,7 +121,10 @@ async function generateAIResponse(prompt, context = "") {
         messages: [
           {
             role: "system",
-            content: `You are a helpful assistant for Froy, partnering with Mountain View Electronics. ${context} Keep responses concise (1-2 sentences max).`
+            content: `You are a helpful assistant for Froy. Only use information from the provided context. 
+            Never mention websites. For payments, direct users to Till Number ${TILL_NUMBER}.
+            Key commands: 'menu', 'register', 'status', 'points'.
+            ${firebaseContext}`
           },
           {
             role: "user",
@@ -105,7 +147,6 @@ async function generateAIResponse(prompt, context = "") {
   }
 }
 
-// Message sending functions with improved error handling
 async function sendMessage(to, text) {
   try {
     const response = await axios.post(
@@ -158,7 +199,6 @@ async function sendInteractiveMessage(to, interactiveData) {
 
 async function sendImage(to, imageUrl, caption = '') {
   try {
-    // Ensure the URL is properly encoded
     const encodedUrl = encodeURI(imageUrl);
     const response = await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
@@ -169,7 +209,7 @@ async function sendImage(to, imageUrl, caption = '') {
         type: 'image',
         image: {
           link: encodedUrl,
-          caption: caption.substring(0, 1024) // WhatsApp caption limit
+          caption: caption.substring(0, 1024)
         }
       },
       {
@@ -186,7 +226,34 @@ async function sendImage(to, imageUrl, caption = '') {
   }
 }
 
-// Product catalog with image handling
+async function sendLocationRequest(to, text) {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: to,
+        type: 'text',
+        text: { 
+          body: text,
+          preview_url: false
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Location request error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
 async function sendProductCatalog(to) {
   try {
     const snapshot = await db.collection('products').where('active', '==', true).get();
@@ -205,20 +272,17 @@ async function sendProductCatalog(to) {
       };
     });
 
-    // Send first product with image
     const firstProduct = products[0];
     if (firstProduct.images && firstProduct.images.length > 0) {
       try {
         await sendImage(to, firstProduct.images[0], `${firstProduct.name}\nKES ${firstProduct.price}`);
       } catch (imageError) {
-        console.error('Failed to send image, falling back to text:', imageError);
         await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nKES ${firstProduct.price}`);
       }
     } else {
       await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nKES ${firstProduct.price}`);
     }
 
-    // Send remaining products as list
     if (products.length > 1) {
       const interactiveData = {
         type: 'list',
@@ -250,7 +314,6 @@ async function sendProductCatalog(to) {
   }
 }
 
-// Webhook handlers
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -277,8 +340,7 @@ app.post('/webhook', async (req, res) => {
     console.log('Received message:', message.type, 'from:', from);
 
     // Store conversation context
-    const conversationRef = db.collection('conversations').doc(from);
-    await conversationRef.set({
+    await db.collection('conversations').doc(from).set({
       lastMessage: message.type === 'text' ? message.text.body : message.type,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
@@ -306,6 +368,12 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
       }
 
+      // Handle location messages
+      if (message.location) {
+        await handleLocationMessage(from, message.location);
+        return res.sendStatus(200);
+      }
+
       // Handle registration text responses
       const userDoc = await db.collection('users').doc(from).get();
       if (userDoc.exists) {
@@ -329,7 +397,7 @@ app.post('/webhook', async (req, res) => {
       }
 
       // Handle general conversation with AI
-      const aiResponse = await generateAIResponse(text, "You're helping a customer with Froy products.");
+      const aiResponse = await generateAIResponse(text, from);
       await sendMessage(from, aiResponse);
       return res.sendStatus(200);
     }
@@ -368,7 +436,7 @@ app.post('/webhook', async (req, res) => {
         await initiatePurchase(from, productId);
       } else if (responseId.startsWith('trial_')) {
         const productId = responseId.replace('trial_', '');
-        await initiateTrial(from, productId);
+        await initiateTrialOrPurchase(from, productId);
       } else if (responseId.startsWith('confirm_purchase_')) {
         const orderId = responseId.replace('confirm_purchase_', '');
         await confirmPurchase(from, orderId);
@@ -386,11 +454,9 @@ app.post('/webhook', async (req, res) => {
         } else if (action === 'later') {
           await sendMessage(from, "No problem! Please confirm your payment when you've made it by typing 'status' later.");
         }
-      } else if (responseId === 'back_to_catalog') {
-        await sendProductCatalog(from);
-      } else if (responseId.startsWith('video_')) {
-        const productId = responseId.replace('video_', '');
-        await sendProductVideo(from, productId);
+      } else if (responseId.startsWith('delivery_')) {
+        const productId = responseId.replace('delivery_', '');
+        await handleDeliveryOption(from, productId);
       }
     }
 
@@ -401,11 +467,35 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+async function handleLocationMessage(to, location) {
+  try {
+    const userDoc = await db.collection('users').doc(to).get();
+    if (!userDoc.exists) {
+      await sendMessage(to, "Please complete registration first by typing 'register'");
+      return;
+    }
+
+    await db.collection('users').doc(to).update({
+      deliveryLocation: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        address: location.address || '',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }
+    });
+
+    await sendMessage(to, "Thank you for sharing your location! We'll use this for delivery.");
+  } catch (error) {
+    console.error('Location handling error:', error);
+    await sendMessage(to, "Failed to save your location. Please try again.");
+  }
+}
+
 async function handleGreeting(to) {
   try {
     const userDoc = await db.collection('users').doc(to).get();
     if (userDoc.exists && userDoc.data().name) {
-      await sendMessage(to, `Hello ${userDoc.data().name}! Welcome back to Froy. How can we assist you today?`);
+      await sendMessage(to, `Hello ${userDoc.data().name}! Welcome back to Froy. Type 'menu' to see options.`);
     } else {
       await sendMessage(to, "Hello! Welcome to Froy. To get started, please type 'register' to create your account.");
     }
@@ -442,7 +532,7 @@ async function sendWelcomeMessage(to) {
     const interactiveData = {
       type: 'button',
       body: {
-        text: "Welcome to Froy, partnering with Mountain View Electronics!\nAre you a Mountain View Estate resident?"
+        text: "Welcome to Froy!\nAre you a Mountain View Estate resident?"
       },
       action: {
         buttons: [
@@ -454,7 +544,7 @@ async function sendWelcomeMessage(to) {
     await sendInteractiveMessage(to, interactiveData);
   } catch (error) {
     console.error('Welcome message error:', error);
-    await sendMessage(to, "Welcome! How can we assist you today?");
+    await sendMessage(to, "Welcome! Type 'menu' to see options.");
   }
 }
 
@@ -470,20 +560,14 @@ async function sendProductDetails(to, productId) {
     const userDoc = await db.collection('users').doc(to).get();
     const isResident = userDoc.exists ? userDoc.data().isEstateResident : false;
 
-    // Send product image if available
     if (product.images && product.images.length > 0) {
       try {
         await sendImage(to, product.images[0], `${product.name}\nKES ${product.price}`);
       } catch (imageError) {
-        console.error('Failed to send image, falling back to text:', imageError);
         await sendMessage(to, `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
       }
     } else {
       await sendMessage(to, `${product.name}\n${product.description}\nPrice: KES ${product.price}`);
-    }
-
-    if (isResident) {
-      await sendMessage(to, "As a resident, you qualify for a 7-day free trial of this product!");
     }
 
     const interactiveData = {
@@ -492,10 +576,10 @@ async function sendProductDetails(to, productId) {
       action: {
         buttons: [
           { type: 'reply', reply: { id: `more_images_${productId}`, title: 'See More Images' } },
-          isResident ? 
-            { type: 'reply', reply: { id: `trial_${productId}`, title: 'Start Free Trial' } } :
-            { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now' } },
-          { type: 'reply', reply: { id: 'back_to_catalog', title: 'Back to Catalog' } }
+          { type: 'reply', reply: { 
+            id: isResident ? `trial_${productId}` : `buy_${productId}`, 
+            title: isResident ? 'Trial/Purchase Options' : 'Purchase Now' 
+          } }
         ]
       }
     };
@@ -507,54 +591,49 @@ async function sendProductDetails(to, productId) {
   }
 }
 
-async function sendAdditionalImages(to, productId) {
+async function initiateTrialOrPurchase(to, productId) {
   try {
-    const doc = await db.collection('products').doc(productId).get();
-    if (!doc.exists || !doc.data().images || doc.data().images.length <= 1) {
-      await sendMessage(to, "No additional images available for this product.");
+    const productDoc = await db.collection('products').doc(productId).get();
+    if (!productDoc.exists) {
+      await sendMessage(to, "Product not available.");
       return;
     }
 
-    const images = doc.data().images.slice(1);
-    for (const imageUrl of images) {
-      try {
-        await sendImage(to, imageUrl);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Delay between images
-      } catch (imageError) {
-        console.error('Failed to send image:', imageError);
-      }
-    }
-
+    const product = productDoc.data();
+    const userDoc = await db.collection('users').doc(to).get();
+    
     const interactiveData = {
       type: 'button',
-      body: { text: "Would you like to see a video of this product in action?" },
+      body: { 
+        text: `Choose option for ${product.name}:`
+      },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: `video_${productId}`, title: 'Yes, Show Video' } },
-          { type: 'reply', reply: { id: `back_to_product_${productId}`, title: 'No, Go Back' } }
+          { type: 'reply', reply: { id: `trial_start_${productId}`, title: 'Start Free Trial' } },
+          { type: 'reply', reply: { id: `buy_${productId}`, title: 'Purchase Now (KES ${product.price})' } },
+          { type: 'reply', reply: { id: `delivery_${productId}`, title: 'Set Delivery Location' } }
         ]
       }
     };
 
     await sendInteractiveMessage(to, interactiveData);
   } catch (error) {
-    console.error('Additional images error:', error);
-    await sendMessage(to, "Failed to load additional images. Please try again.");
+    console.error('Trial/purchase initiation error:', error);
+    await sendMessage(to, "Failed to process your request. Please try again.");
   }
 }
 
-async function sendProductVideo(to, productId) {
+async function handleDeliveryOption(to, productId) {
   try {
-    const doc = await db.collection('products').doc(productId).get();
-    if (!doc.exists || !doc.data().video) {
-      await sendMessage(to, "No video available for this product.");
-      return;
-    }
-
-    await sendMessage(to, `Here's the product video: ${doc.data().video}`);
+    await sendLocationRequest(to, "Please share your current location for delivery:");
+    
+    // Store the product ID in conversation context
+    await db.collection('conversations').doc(to).update({
+      pendingDeliveryProduct: productId
+    });
   } catch (error) {
-    console.error('Product video error:', error);
-    await sendMessage(to, "Failed to load product video. Please try again.");
+    console.error('Delivery option error:', error);
+    await sendMessage(to, "Failed to request location. Please try again.");
   }
 }
 
@@ -581,19 +660,19 @@ async function initiatePurchase(to, productId) {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       paymentConfirmed: false,
       deliveryStatus: 'pending',
-      isTrial: false
+      isTrial: false,
+      deliveryLocation: userData.deliveryLocation || null
     });
 
     const interactiveData = {
       type: 'button',
       body: { 
-        text: `Purchase ${product.name} for KES ${product.price}\n\nPay to: 123456\nTill Number: 54321\nName: Froy\n\nOnce paid, please confirm below:`
+        text: `Purchase ${product.name} for KES ${product.price}\n\nPay to Till Number: ${TILL_NUMBER}\nName: Froy\n\nOnce paid, please confirm:`
       },
       action: {
         buttons: [
           { type: 'reply', reply: { id: `payment_paid_${orderRef.id}`, title: 'I Have Paid' } },
-          { type: 'reply', reply: { id: `payment_later_${orderRef.id}`, title: 'I will Pay Later' } },
-          { type: 'reply', reply: { id: 'cancel_purchase', title: 'Cancel' } }
+          { type: 'reply', reply: { id: `payment_later_${orderRef.id}`, title: 'Pay Later' } }
         ]
       }
     };
@@ -605,68 +684,6 @@ async function initiatePurchase(to, productId) {
   }
 }
 
-async function initiateTrial(to, productId) {
-  try {
-    const productDoc = await db.collection('products').doc(productId).get();
-    if (!productDoc.exists) {
-      await sendMessage(to, "Product not available for trial.");
-      return;
-    }
-
-    const product = productDoc.data();
-    const userDoc = await db.collection('users').doc(to).get();
-    const userData = userDoc.exists ? userDoc.data() : {};
-
-    // Check if user already has an active trial
-    const activeTrial = await db.collection('trials')
-      .where('customerPhone', '==', to)
-      .where('status', '==', 'active')
-      .get();
-
-    if (!activeTrial.empty) {
-      await sendMessage(to, "You already have an active trial. Please complete that before starting a new one.");
-      return;
-    }
-
-    const trialRef = await db.collection('trials').add({
-      productId: productId,
-      productName: product.name,
-      customerPhone: to,
-      customerName: userData.name || '',
-      estateNumber: userData.estateNumber || '',
-      status: 'pending',
-      startDate: admin.firestore.FieldValue.serverTimestamp(),
-      endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    await db.collection('orders').add({
-      productId: productId,
-      productName: product.name,
-      price: 0,
-      customerPhone: to,
-      customerName: userData.name || '',
-      estateNumber: userData.estateNumber || '',
-      status: 'trial_started',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      paymentConfirmed: true,
-      deliveryStatus: 'pending',
-      isTrial: true,
-      trialId: trialRef.id
-    });
-
-    await sendMessage(to, `Your 7-day free trial for ${product.name} has been started! We'll contact you for delivery details.`);
-    
-    // Send AI-generated product education
-    const educationPrompt = `Generate 3-5 short bullet points (max 200 characters total) about how to use ${product.name} (${product.description}) for best results.`;
-    const educationPoints = await generateAIResponse(educationPrompt, "You're providing product usage tips.");
-    await sendMessage(to, `Product Tips:\n\n${educationPoints}`);
-  } catch (error) {
-    console.error('Trial initiation error:', error);
-    await sendMessage(to, "Failed to start trial. Please try again.");
-  }
-}
-
 async function confirmPurchase(to, orderId) {
   try {
     await db.collection('orders').doc(orderId).update({
@@ -675,33 +692,14 @@ async function confirmPurchase(to, orderId) {
       status: 'payment_received'
     });
 
-    await sendMessage(to, "Thank you for your payment! We'll process your order shortly. You'll receive updates on your delivery status.");
+    await sendMessage(to, "Thank you for your payment! We'll process your order shortly.");
     
     const orderDoc = await db.collection('orders').doc(orderId).get();
     const productDoc = await db.collection('products').doc(orderDoc.data().productId).get();
     
     if (productDoc.exists) {
-      const complementaryItems = await db.collection('complementary_items')
-        .where('product_id', '==', orderDoc.data().productId)
-        .where('active', '==', true)
-        .get();
-      
-      if (!complementaryItems.empty) {
-        await sendMessage(to, "Recommended complementary items:");
-        
-        for (const item of complementaryItems.docs) {
-          const itemData = item.data();
-          if (itemData.image) {
-            try {
-              await sendImage(to, itemData.image, `${itemData.name}\n${itemData.description}`);
-            } catch (imageError) {
-              await sendMessage(to, `${itemData.name}\n${itemData.description}`);
-            }
-          } else {
-            await sendMessage(to, `${itemData.name}\n${itemData.description}`);
-          }
-        }
-      }
+      const product = productDoc.data();
+      await sendMessage(to, `Here's the user guide for your ${product.name}:\n\n${product.user_guide}`);
     }
 
     await updateLoyaltyPoints(to, 10, 'purchase');
@@ -739,7 +737,7 @@ async function checkLoyaltyPoints(to) {
     }
 
     const points = userDoc.data().loyaltyPoints || 0;
-    await sendMessage(to, `You have ${points} loyalty points. Earn 10 points for each purchase and 5 points for referrals!`);
+    await sendMessage(to, `You have ${points} loyalty points. Earn 10 points for each purchase!`);
   } catch (error) {
     console.error('Loyalty points check error:', error);
     await sendMessage(to, "Failed to check your loyalty points. Please try again later.");
