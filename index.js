@@ -125,37 +125,51 @@ async function sendProductCatalog(to) {
       return;
     }
 
-    const products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    
-    // Send first product as image
-    const firstProduct = products[0];
-    if (firstProduct.images && firstProduct.images.length > 0) {
-      await sendMessage(to, `${firstProduct.name}\n${firstProduct.description}\nPrice: KES ${firstProduct.price}`);
-    }
+    const products = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        title: data.name.length > 24 ? data.name.substring(0, 21) + '...' : data.name,
+        description: `KES ${data.price}`,
+        ...data
+      };
+    });
 
-    // Send remaining products as interactive list
+    // Send first product details
+    const firstProduct = products[0];
+    await sendMessage(to, 
+      `${firstProduct.title}\n${firstProduct.description}\n${firstProduct.details || ''}`
+    );
+
+    // Prepare interactive list for remaining products
     if (products.length > 1) {
       const interactiveData = {
         type: 'list',
-        header: { type: 'text', text: 'Our Products' },
-        body: { text: 'Please select a product:' },
+        header: { 
+          type: 'text', 
+          text: 'Our Products'
+        },
+        body: { 
+          text: 'Select a product:' 
+        },
         action: {
-          button: 'Browse Products',
+          button: 'Browse',
           sections: [{
-            title: 'Available Products',
+            title: 'Products',
             rows: products.slice(1).map(product => ({
               id: `product_${product.id}`,
-              title: product.name,
-              description: `KES ${product.price}`
+              title: product.title,
+              description: product.description
             }))
           }]
         }
       };
+
       await sendInteractiveMessage(to, interactiveData);
     }
   } catch (error) {
     console.error('Catalog error:', error);
-    await sendMessage(to, "We're having trouble loading products. Please try again later.");
+    await sendMessage(to, "We're having technical difficulties. Please try again later.");
   }
 }
 
