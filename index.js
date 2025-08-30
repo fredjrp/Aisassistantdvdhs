@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const qs = require('querystring');
 
 const app = express();
 app.use(express.json());
@@ -19,9 +20,14 @@ const {
   WHATSAPP_ACCESS_TOKEN,
   WEBHOOK_VERIFY_TOKEN,
   PHONE_NUMBER_ID,
-  JUMIA_API_TOKEN,
-  JUMIA_API_URL = 'https://vendorapi.jumia.com' // Default URL, can be overridden
+  JUMIA_CLIENT_ID = '66948ed6-996d-4ea7-9505-2cd9cdc18fb6',
+  JUMIA_REFRESH_TOKEN,
+  JUMIA_API_URL = 'https://vendor-api.jumia.com'
 } = process.env;
+
+// Token management
+let accessToken = null;
+let tokenExpiry = null;
 
 // Validate environment variables
 function validateEnvironment() {
@@ -29,7 +35,7 @@ function validateEnvironment() {
     'WHATSAPP_ACCESS_TOKEN',
     'WEBHOOK_VERIFY_TOKEN',
     'PHONE_NUMBER_ID',
-    'JUMIA_API_TOKEN'
+    'JUMIA_REFRESH_TOKEN'
   ];
   
   const missing = requiredEnvVars.filter(envVar => !process.env[envVar]);
@@ -41,58 +47,92 @@ function validateEnvironment() {
 
 validateEnvironment();
 
-// Fetch products from Jumia Vendor API
-async function fetchJumiaProducts(limit = 10) {
+// Get access token using refresh token
+async function getAccessToken() {
   try {
-    const response = await axios.get(`${JUMIA_API_URL}/catalog/products?limit=${limit}`, {
-      headers: {
-        Authorization: `Bearer ${JUMIA_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
+    // If we have a valid token, return it
+    if (accessToken && tokenExpiry && Date.now() < tokenExpiry) {
+      return accessToken;
+    }
 
-    console.log("✅ Products fetched successfully");
-    return response.data;
+    console.log('Refreshing Jumia access token...');
+    
+    const res = await axios.post(
+      `${JUMIA_API_URL}/auth/realms/acl/protocol/openid-connect/token`,
+      qs.stringify({
+        grant_type: "refresh_token",
+        client_id: JUMIA_CLIENT_ID,
+        refresh_token: JUMIA_REFRESH_TOKEN
+      }),
+      {
+        headers: { 
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "application/json"
+        }
+      }
+    );
+
+    accessToken = res.data.access_token;
+    // Set token expiry (with 60 second buffer)
+    tokenExpiry = Date.now() + (res.data.expires_in * 1000) - 60000;
+    
+    console.log("✅ Jumia access token refreshed successfully");
+    return accessToken;
   } catch (err) {
-    console.error("❌ Jumia API error (Products):", err.response?.data || err.message);
+    console.error("❌ Error fetching access token:", err.response?.data || err.message);
     throw err;
   }
+}
+
+// Make authenticated request to Jumia API
+async function makeJumiaRequest(endpoint, method = 'GET', params = {}) {
+  try {
+    const token = await getAccessToken();
+    const url = `${JUMIA_API_URL}${endpoint}`;
+    
+    const config = {
+      method,
+      url,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      }
+    };
+
+    if (method === 'GET') {
+      config.params = params;
+    } else {
+      config.data = params;
+    }
+
+    const response = await axios(config);
+    return response.data;
+  } catch (err) {
+    console.error(`❌ Jumia API error (${endpoint}):`, err.response?.data || err.message);
+    
+    // If it's an authentication error, clear the token to force refresh
+    if (err.response && err.response.status === 401) {
+      accessToken = null;
+      tokenExpiry = null;
+    }
+    
+    throw err;
+  }
+}
+
+// Fetch products from Jumia Vendor API
+async function fetchJumiaProducts(limit = 10, offset = 0) {
+  return makeJumiaRequest('/catalog/products', 'GET', { limit, offset });
 }
 
 // Fetch orders from Jumia Vendor API
 async function fetchJumiaOrders(status = "pending") {
-  try {
-    const response = await axios.get(`${JUMIA_API_URL}/orders?status=${status}`, {
-      headers: {
-        Authorization: `Bearer ${JUMIA_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    console.log(`✅ Orders (${status}) fetched successfully`);
-    return response.data;
-  } catch (err) {
-    console.error("❌ Jumia API error (Orders):", err.response?.data || err.message);
-    throw err;
-  }
+  return makeJumiaRequest('/orders', 'GET', { status });
 }
 
 // Get product details by ID
 async function getProduct(productId) {
-  try {
-    const response = await axios.get(`${JUMIA_API_URL}/catalog/products/${productId}`, {
-      headers: {
-        Authorization: `Bearer ${JUMIA_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    console.log(`✅ Product ${productId} fetched successfully`);
-    return response.data;
-  } catch (err) {
-    console.error("❌ Jumia API error (GetProduct):", err.response?.data || err.message);
-    throw err;
-  }
+  return makeJumiaRequest(`/catalog/products/${productId}`);
 }
 
 // WhatsApp message functions
@@ -379,13 +419,25 @@ app.post('/webhook', async (req, res) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    service: 'Jumia WhatsApp Seller Bot',
-    jumiaApi: JUMIA_API_URL
-  });
+app.get('/health', async (req, res) => {
+  try {
+    // Test token refresh
+    const token = await getAccessToken();
+    
+    res.status(200).json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      service: 'Jumia WhatsApp Seller Bot',
+      jumiaApi: JUMIA_API_URL,
+      tokenStatus: token ? 'Valid' : 'Invalid'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'ERROR',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
 });
 
 // Test endpoint to check Jumia integration
@@ -422,10 +474,28 @@ app.get('/test-orders', async (req, res) => {
   }
 });
 
+// Test token endpoint
+app.get('/test-token', async (req, res) => {
+  try {
+    const token = await getAccessToken();
+    res.json({
+      success: true,
+      message: 'Token refresh successful',
+      token: token ? 'Received' : 'Not received'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Jumia WhatsApp Seller Bot running on port ${PORT}`);
   console.log(`Health check available at http://localhost:${PORT}/health`);
   console.log(`Jumia test endpoint available at http://localhost:${PORT}/test-jumia`);
+  console.log(`Token test endpoint available at http://localhost:${PORT}/test-token`);
   console.log(`Jumia API URL: ${JUMIA_API_URL}`);
 });
