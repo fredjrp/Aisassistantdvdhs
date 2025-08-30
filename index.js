@@ -20,7 +20,7 @@ const {
   WEBHOOK_VERIFY_TOKEN,
   PHONE_NUMBER_ID,
   JUMIA_API_TOKEN,
-  JUMIA_PARTNER_ID
+  JUMIA_API_URL = 'https://vendorapi.jumia.com' // Default URL, can be overridden
 } = process.env;
 
 // Validate environment variables
@@ -41,24 +41,57 @@ function validateEnvironment() {
 
 validateEnvironment();
 
-// Jumia API integration
-async function fetchJumiaProducts(category = '', limit = 10) {
+// Fetch products from Jumia Vendor API
+async function fetchJumiaProducts(limit = 10) {
   try {
-    // Note: This is a placeholder URL - you'll need to replace it with the actual Jumia API endpoint
-     const apiUrl = `https://vendorcenter.jumia.com/api/catalog/products?limit=${limit}${category ? `&category=${category}` : ''}`;   
-    
-    const response = await axios.get(apiUrl, {
+    const response = await axios.get(`${JUMIA_API_URL}/catalog/products?limit=${limit}`, {
       headers: {
-        'Authorization': `Bearer ${JUMIA_API_TOKEN}`,
-        'Content-Type': 'application/json',
-        'X-Partner-ID': JUMIA_PARTNER_ID || '' // If Jumia requires a partner ID
-      }
+        Authorization: `Bearer ${JUMIA_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
     });
-    
+
+    console.log("✅ Products fetched successfully");
     return response.data;
-  } catch (error) {
-    console.error('Jumia API error:', error.response?.data || error.message);
-    throw new Error('Failed to fetch products from Jumia');
+  } catch (err) {
+    console.error("❌ Jumia API error (Products):", err.response?.data || err.message);
+    throw err;
+  }
+}
+
+// Fetch orders from Jumia Vendor API
+async function fetchJumiaOrders(status = "pending") {
+  try {
+    const response = await axios.get(`${JUMIA_API_URL}/orders?status=${status}`, {
+      headers: {
+        Authorization: `Bearer ${JUMIA_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    console.log(`✅ Orders (${status}) fetched successfully`);
+    return response.data;
+  } catch (err) {
+    console.error("❌ Jumia API error (Orders):", err.response?.data || err.message);
+    throw err;
+  }
+}
+
+// Get product details by ID
+async function getProduct(productId) {
+  try {
+    const response = await axios.get(`${JUMIA_API_URL}/catalog/products/${productId}`, {
+      headers: {
+        Authorization: `Bearer ${JUMIA_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    console.log(`✅ Product ${productId} fetched successfully`);
+    return response.data;
+  } catch (err) {
+    console.error("❌ Jumia API error (GetProduct):", err.response?.data || err.message);
+    throw err;
   }
 }
 
@@ -141,30 +174,46 @@ async function sendImage(to, imageUrl, caption = '') {
   }
 }
 
+// Format product for WhatsApp display
+function formatProductForWhatsApp(product) {
+  // Adjust this based on the actual Jumia API response structure
+  return {
+    name: product.name || product.Name || product.title || "Unnamed Product",
+    price: product.price || product.Price || product.salePrice || "N/A",
+    image: product.image || product.Image || product.mainImage || product.images?.[0] || "",
+    id: product.id || product.productId || product.sku || "N/A",
+    status: product.status || product.Status || "Unknown"
+  };
+}
+
 // Send Jumia products to WhatsApp
-async function sendJumiaProducts(to, category = '') {
+async function sendJumiaProducts(to, limit = 5) {
   try {
     await sendMessage(to, "Fetching products from Jumia... ⏳");
     
-    const products = await fetchJumiaProducts(category, 5);
+    const productsData = await fetchJumiaProducts(limit);
+    
+    // Adjust based on actual API response structure
+    const products = productsData.products || productsData.items || productsData.data || productsData || [];
     
     if (!products || products.length === 0) {
-      await sendMessage(to, "No products found in this category.");
+      await sendMessage(to, "No products found in your Jumia store.");
       return;
     }
     
-    // Send the first product with image
-    const firstProduct = products[0];
+    // Send the first product with image if available
+    const firstProduct = formatProductForWhatsApp(products[0]);
+    
     if (firstProduct.image) {
       await sendImage(
         to, 
         firstProduct.image, 
-        `${firstProduct.name}\nPrice: ${firstProduct.price}\nRating: ${firstProduct.rating || 'N/A'}`
+        `${firstProduct.name}\nPrice: KES ${firstProduct.price}\nID: ${firstProduct.id}`
       );
     } else {
       await sendMessage(
         to, 
-        `${firstProduct.name}\nPrice: ${firstProduct.price}\nRating: ${firstProduct.rating || 'N/A'}`
+        `${firstProduct.name}\nPrice: KES ${firstProduct.price}\nID: ${firstProduct.id}`
       );
     }
     
@@ -177,17 +226,22 @@ async function sendJumiaProducts(to, category = '') {
           text: 'Jumia Products' 
         },
         body: { 
-          text: 'Select a product to see details:' 
+          text: `Showing ${Math.min(products.length, limit)} products. Select one for details:` 
         },
         action: {
           button: 'Browse Products',
           sections: [{
-            title: 'Available Products',
-            rows: products.slice(1).map((product, index) => ({
-              id: `product_${index}`,
-              title: product.name.length > 24 ? product.name.substring(0, 21) + '...' : product.name,
-              description: `KES ${product.price}`
-            }))
+            title: 'Your Products',
+            rows: products.slice(1, 6).map((product, index) => {
+              const formattedProduct = formatProductForWhatsApp(product);
+              return {
+                id: `product_${formattedProduct.id}`,
+                title: formattedProduct.name.length > 24 
+                  ? formattedProduct.name.substring(0, 21) + '...' 
+                  : formattedProduct.name,
+                description: `KES ${formattedProduct.price}`
+              };
+            })
           }]
         }
       };
@@ -195,11 +249,54 @@ async function sendJumiaProducts(to, category = '') {
       await sendInteractiveMessage(to, interactiveData);
     }
     
-    await sendMessage(to, "Type 'more' to see more products or specify a category like 'electronics', 'fashion', etc.");
+    await sendMessage(to, "Type 'more products' to see more or 'orders' to check your orders.");
     
   } catch (error) {
     console.error('Error sending Jumia products:', error);
     await sendMessage(to, "Sorry, I couldn't fetch products from Jumia at the moment. Please try again later.");
+  }
+}
+
+// Send order information to WhatsApp
+async function sendJumiaOrders(to, status = "pending") {
+  try {
+    await sendMessage(to, `Fetching ${status} orders from Jumia... ⏳`);
+    
+    const ordersData = await fetchJumiaOrders(status);
+    
+    // Adjust based on actual API response structure
+    const orders = ordersData.orders || ordersData.items || ordersData.data || ordersData || [];
+    
+    if (!orders || orders.length === 0) {
+      await sendMessage(to, `No ${status} orders found.`);
+      return;
+    }
+    
+    const statusDisplay = status.charAt(0).toUpperCase() + status.slice(1);
+    await sendMessage(to, `You have ${orders.length} ${status} orders:`);
+    
+    // Show first 3 orders
+    for (let i = 0; i < Math.min(orders.length, 3); i++) {
+      const order = orders[i];
+      // Adjust based on actual API response structure
+      const orderId = order.orderId || order.id || "N/A";
+      const orderDate = order.createdAt || order.date || order.orderDate || "Unknown date";
+      const orderStatus = order.status || order.orderStatus || status;
+      const customerName = order.customerName || order.customer?.name || "Unknown customer";
+      
+      await sendMessage(
+        to,
+        `Order #${orderId}\nCustomer: ${customerName}\nDate: ${orderDate}\nStatus: ${orderStatus}`
+      );
+    }
+    
+    if (orders.length > 3) {
+      await sendMessage(to, `...and ${orders.length - 3} more ${status} orders.`);
+    }
+    
+  } catch (error) {
+    console.error('Error sending Jumia orders:', error);
+    await sendMessage(to, "Sorry, I couldn't fetch orders from Jumia at the moment. Please try again later.");
   }
 }
 
@@ -234,32 +331,44 @@ app.post('/webhook', async (req, res) => {
       
       // Handle greetings
       if (['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening'].includes(text)) {
-        await sendMessage(from, "Hello! Welcome to Jumia Shopping Assistant. Type 'products' to browse items or specify a category like 'electronics'.");
+        await sendMessage(from, "Hello! Welcome to your Jumia Seller Assistant. Type 'products' to view your items or 'orders' to check orders.");
         return res.sendStatus(200);
       }
       
       // Handle product requests
-      if (text === 'products' || text === 'menu') {
+      if (text === 'products' || text === 'items' || text === 'inventory') {
         await sendJumiaProducts(from);
         return res.sendStatus(200);
       }
       
-      if (text === 'more') {
-        await sendJumiaProducts(from);
+      if (text === 'more products') {
+        await sendJumiaProducts(from, 10);
         return res.sendStatus(200);
       }
       
-      // Handle category-specific requests
-      const categories = ['electronics', 'fashion', 'home', 'sports', 'beauty', 'books'];
-      const requestedCategory = categories.find(category => text.includes(category));
+      // Handle order requests
+      if (text === 'orders' || text === 'order status') {
+        await sendJumiaOrders(from);
+        return res.sendStatus(200);
+      }
       
-      if (requestedCategory) {
-        await sendJumiaProducts(from, requestedCategory);
+      if (text.includes('pending orders')) {
+        await sendJumiaOrders(from, "pending");
+        return res.sendStatus(200);
+      }
+      
+      if (text.includes('shipped orders') || text.includes('delivered orders')) {
+        await sendJumiaOrders(from, "shipped");
+        return res.sendStatus(200);
+      }
+      
+      if (text.includes('cancelled orders')) {
+        await sendJumiaOrders(from, "canceled");
         return res.sendStatus(200);
       }
       
       // Default response for other messages
-      await sendMessage(from, "I'm your Jumia shopping assistant. Type 'products' to browse items or specify a category like 'electronics', 'fashion', etc.");
+      await sendMessage(from, "I'm your Jumia Seller Assistant. Type 'products' to view your items or 'orders' to check orders.");
     }
 
     res.sendStatus(200);
@@ -274,17 +383,36 @@ app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    service: 'Jumia WhatsApp Bot'
+    service: 'Jumia WhatsApp Seller Bot',
+    jumiaApi: JUMIA_API_URL
   });
 });
 
 // Test endpoint to check Jumia integration
 app.get('/test-jumia', async (req, res) => {
   try {
-    const products = await fetchJumiaProducts('', 2);
+    const products = await fetchJumiaProducts(2);
     res.json({
       success: true,
-      products: products || [{ name: 'Test Product', price: 1000, image: 'https://example.com/image.jpg' }]
+      message: 'Jumia API test successful',
+      products: products || { data: [] }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test endpoint for orders
+app.get('/test-orders', async (req, res) => {
+  try {
+    const orders = await fetchJumiaOrders("pending");
+    res.json({
+      success: true,
+      message: 'Jumia Orders API test successful',
+      orders: orders || { data: [] }
     });
   } catch (error) {
     res.status(500).json({
@@ -296,6 +424,8 @@ app.get('/test-jumia', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Jumia WhatsApp bot running on port ${PORT}`);
+  console.log(`Jumia WhatsApp Seller Bot running on port ${PORT}`);
+  console.log(`Health check available at http://localhost:${PORT}/health`);
+  console.log(`Jumia test endpoint available at http://localhost:${PORT}/test-jumia`);
+  console.log(`Jumia API URL: ${JUMIA_API_URL}`);
 });
-
