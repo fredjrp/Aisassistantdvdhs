@@ -188,6 +188,25 @@ async function sendInteractiveMessage(to, interactiveData) {
 
 async function sendImage(to, imageUrl, caption = '') {
   try {
+    // Extract the URL string if imageUrl is an object
+    let actualImageUrl = imageUrl;
+    
+    // Handle cases where imageUrl might be an object with url property
+    if (typeof imageUrl === 'object' && imageUrl !== null) {
+      if (imageUrl.url) {
+        actualImageUrl = imageUrl.url;
+      } else if (imageUrl.link) {
+        actualImageUrl = imageUrl.link;
+      } else if (imageUrl.originalUrl) {
+        actualImageUrl = imageUrl.originalUrl;
+      }
+    }
+    
+    // Ensure we have a valid string URL
+    if (typeof actualImageUrl !== 'string') {
+      throw new Error('Invalid image URL format');
+    }
+
     const response = await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -196,7 +215,7 @@ async function sendImage(to, imageUrl, caption = '') {
         to: to,
         type: 'image',
         image: {
-          link: imageUrl,
+          link: actualImageUrl, // ✅ Just the string URL, not an object
           caption: caption.substring(0, 1024)
         }
       },
@@ -207,20 +226,40 @@ async function sendImage(to, imageUrl, caption = '') {
         }
       }
     );
+    
+    console.log("✅ Image sent successfully");
     return response.data;
   } catch (error) {
-    console.error('Image sending error:', error.response?.data || error.message);
+    console.error('❌ Image sending error:', error.response?.data || error.message);
     throw error;
   }
 }
 
-// Format product for WhatsApp display
+// Format product for WhatsApp display with proper image URL handling
 function formatProductForWhatsApp(product) {
+  // Extract image URL properly (handle object cases)
+  let imageUrl = "";
+  if (product.image) {
+    if (typeof product.image === 'object' && product.image.url) {
+      imageUrl = product.image.url;
+    } else if (typeof product.image === 'string') {
+      imageUrl = product.image;
+    } else if (product.images && product.images.length > 0) {
+      // Handle array of images
+      const firstImage = product.images[0];
+      if (typeof firstImage === 'object' && firstImage.url) {
+        imageUrl = firstImage.url;
+      } else if (typeof firstImage === 'string') {
+        imageUrl = firstImage;
+      }
+    }
+  }
+  
   // Adjust this based on the actual Jumia API response structure
   return {
     name: product.name || product.Name || product.title || "Unnamed Product",
     price: product.price || product.Price || product.salePrice || "N/A",
-    image: product.image || product.Image || product.mainImage || product.images?.[0] || "",
+    image: imageUrl,
     id: product.id || product.productId || product.sku || "N/A",
     status: product.status || product.Status || "Unknown"
   };
