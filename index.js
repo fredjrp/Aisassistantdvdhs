@@ -29,6 +29,9 @@ const {
 let accessToken = null;
 let tokenExpiry = null;
 
+// User session management
+const userSessions = new Map();
+
 // Validate environment variables
 function validateEnvironment() {
   const requiredEnvVars = [
@@ -135,6 +138,11 @@ async function getProduct(productId) {
   return makeJumiaRequest(`/catalog/products/${productId}`);
 }
 
+// Create a new order
+async function createOrder(orderData) {
+  return makeJumiaRequest('/orders', 'POST', orderData);
+}
+
 // WhatsApp message functions
 async function sendMessage(to, text) {
   try {
@@ -199,6 +207,8 @@ async function sendImage(to, imageUrl, caption = '') {
         actualImageUrl = imageUrl.link;
       } else if (imageUrl.originalUrl) {
         actualImageUrl = imageUrl.originalUrl;
+      } else if (imageUrl.primary) {
+        actualImageUrl = imageUrl.primary;
       }
     }
     
@@ -255,14 +265,219 @@ function formatProductForWhatsApp(product) {
     }
   }
   
+  // Extract price properly
+  let price = "N/A";
+  if (product.price) {
+    price = typeof product.price === 'object' ? product.price.amount || product.price.value : product.price;
+  } else if (product.salePrice) {
+    price = typeof product.salePrice === 'object' ? product.salePrice.amount || product.salePrice.value : product.salePrice;
+  } else if (product.pricing) {
+    price = product.pricing.salePrice || product.pricing.price;
+  }
+  
+  // Format price as KES
+  if (price !== "N/A" && typeof price === 'number') {
+    price = `KES ${price.toLocaleString()}`;
+  }
+  
   // Adjust this based on the actual Jumia API response structure
   return {
     name: product.name || product.Name || product.title || "Unnamed Product",
-    price: product.price || product.Price || product.salePrice || "N/A",
+    price: price,
     image: imageUrl,
     id: product.id || product.productId || product.sku || "N/A",
-    status: product.status || product.Status || "Unknown"
+    status: product.status || product.Status || "Unknown",
+    description: product.description || product.Description || "",
+    sku: product.sku || product.SellerSku || "",
+    stock: product.stock || product.quantity || 0
   };
+}
+
+// Send product details with multiple images
+async function sendProductDetails(to, productId) {
+  try {
+    await sendMessage(to, "Fetching product details... ⏳");
+    
+    const productData = await getProduct(productId);
+    const product = formatProductForWhatsApp(productData);
+    
+    // Send product description
+    await sendMessage(to, 
+      `📦 *${product.name}*\n\n` +
+      `💰 Price: ${product.price}\n` +
+      `📋 SKU: ${product.sku}\n` +
+      `📊 Stock: ${product.stock}\n\n` +
+      `📝 Description:\n${product.description.substring(0, 500)}${product.description.length > 500 ? '...' : ''}`
+    );
+    
+    // Send main image
+    if (product.image) {
+      await sendImage(to, product.image, `${product.name} - Main Image`);
+    }
+    
+    // Send additional images if available
+    if (productData.images && productData.images.length > 1) {
+      for (let i = 1; i < Math.min(productData.images.length, 4); i++) {
+        const image = productData.images[i];
+        let imageUrl = "";
+        
+        if (typeof image === 'object' && image.url) {
+          imageUrl = image.url;
+        } else if (typeof image === 'string') {
+          imageUrl = image;
+        }
+        
+        if (imageUrl) {
+          await sendImage(to, imageUrl, `${product.name} - Image ${i + 1}`);
+        }
+      }
+    }
+    
+    // Send order options
+    const interactiveData = {
+      type: 'button',
+      body: { 
+        text: `Would you like to order ${product.name}?` 
+      },
+      action: {
+        buttons: [
+          { 
+            type: 'reply', 
+            reply: { 
+              id: `order_${productId}`, 
+              title: '✅ Place Order' 
+            } 
+          },
+          { 
+            type: 'reply', 
+            reply: { 
+              id: 'menu', 
+              title: '📋 Back to Menu' 
+            } 
+          }
+        ]
+      }
+    };
+    
+    await sendInteractiveMessage(to, interactiveData);
+    
+  } catch (error) {
+    console.error('Error sending product details:', error);
+    await sendMessage(to, "Sorry, I couldn't fetch the product details. Please try again later.");
+  }
+}
+
+// Initiate order process
+async function initiateOrder(to, productId) {
+  try {
+    const productData = await getProduct(productId);
+    const product = formatProductForWhatsApp(productData);
+    
+    // Store product in user session
+    if (!userSessions.has(to)) {
+      userSessions.set(to, {});
+    }
+    userSessions.get(to).pendingOrder = product;
+    
+    await sendMessage(to,
+      `🛒 Order: ${product.name}\n` +
+      `💰 Price: ${product.price}\n\n` +
+      `Please provide the following information:\n` +
+      `1. Your full name\n` +
+      `2. Delivery address\n` +
+      `3. Phone number\n` +
+      `4. Quantity (default: 1)\n\n` +
+      `Please send your details in this format:\n` +
+      `Name: John Doe\n` +
+      `Address: 123 Main St, Nairobi\n` +
+      `Phone: 0712345678\n` +
+      `Quantity: 1`
+    );
+    
+  } catch (error) {
+    console.error('Error initiating order:', error);
+    await sendMessage(to, "Sorry, I couldn't process your order. Please try again later.");
+  }
+}
+
+// Process order information
+async function processOrderInformation(to, message) {
+  try {
+    const session = userSessions.get(to);
+    if (!session || !session.pendingOrder) {
+      await sendMessage(to, "No pending order found. Please start over.");
+      return;
+    }
+    
+    const product = session.pendingOrder;
+    const lines = message.split('\n');
+    const orderInfo = {};
+    
+    // Parse order information
+    for (const line of lines) {
+      if (line.toLowerCase().includes('name:')) {
+        orderInfo.name = line.split(':')[1].trim();
+      } else if (line.toLowerCase().includes('address:')) {
+        orderInfo.address = line.split(':')[1].trim();
+      } else if (line.toLowerCase().includes('phone:')) {
+        orderInfo.phone = line.split(':')[1].trim();
+      } else if (line.toLowerCase().includes('quantity:')) {
+        orderInfo.quantity = parseInt(line.split(':')[1].trim()) || 1;
+      }
+    }
+    
+    // Validate required information
+    if (!orderInfo.name || !orderInfo.address || !orderInfo.phone) {
+      await sendMessage(to, "Please provide all required information: Name, Address, and Phone number.");
+      return;
+    }
+    
+    // Confirm order
+    session.orderInfo = orderInfo;
+    
+    await sendMessage(to,
+      `✅ Order Summary:\n\n` +
+      `Product: ${product.name}\n` +
+      `Price: ${product.price}\n` +
+      `Quantity: ${orderInfo.quantity || 1}\n` +
+      `Total: ${product.price.replace('KES', '').trim() * (orderInfo.quantity || 1)}\n\n` +
+      `Customer: ${orderInfo.name}\n` +
+      `Address: ${orderInfo.address}\n` +
+      `Phone: ${orderInfo.phone}\n\n` +
+      `Please confirm your order.`
+    );
+    
+    const interactiveData = {
+      type: 'button',
+      body: { 
+        text: `Confirm your order for ${product.name}?` 
+      },
+      action: {
+        buttons: [
+          { 
+            type: 'reply', 
+            reply: { 
+              id: `confirm_order_${product.id}`, 
+              title: '✅ Confirm Order' 
+            } 
+          },
+          { 
+            type: 'reply', 
+            reply: { 
+              id: 'cancel_order', 
+              title: '❌ Cancel' 
+            } 
+          }
+        ]
+      }
+    };
+    
+    await sendInteractiveMessage(to, interactiveData);
+    
+  } catch (error) {
+    console.error('Error processing order information:', error);
+    await sendMessage(to, "Sorry, I couldn't process your order information. Please try again.");
+  }
 }
 
 // Send Jumia products to WhatsApp
@@ -287,12 +502,12 @@ async function sendJumiaProducts(to, limit = 5) {
       await sendImage(
         to, 
         firstProduct.image, 
-        `${firstProduct.name}\nPrice: KES ${firstProduct.price}\nID: ${firstProduct.id}`
+        `${firstProduct.name}\nPrice: ${firstProduct.price}\nID: ${firstProduct.id}`
       );
     } else {
       await sendMessage(
         to, 
-        `${firstProduct.name}\nPrice: KES ${firstProduct.price}\nID: ${firstProduct.id}`
+        `${firstProduct.name}\nPrice: ${firstProduct.price}\nID: ${firstProduct.id}`
       );
     }
     
@@ -311,14 +526,14 @@ async function sendJumiaProducts(to, limit = 5) {
           button: 'Browse Products',
           sections: [{
             title: 'Your Products',
-            rows: products.slice(1, 6).map((product, index) => {
+            rows: products.slice(0, 6).map((product, index) => {
               const formattedProduct = formatProductForWhatsApp(product);
               return {
                 id: `product_${formattedProduct.id}`,
                 title: formattedProduct.name.length > 24 
                   ? formattedProduct.name.substring(0, 21) + '...' 
                   : formattedProduct.name,
-                description: `KES ${formattedProduct.price}`
+                description: `${formattedProduct.price}`
               };
             })
           }]
@@ -362,10 +577,11 @@ async function sendJumiaOrders(to, status = "pending") {
       const orderDate = order.createdAt || order.date || order.orderDate || "Unknown date";
       const orderStatus = order.status || order.orderStatus || status;
       const customerName = order.customerName || order.customer?.name || "Unknown customer";
+      const totalAmount = order.totalAmount || order.amount || "N/A";
       
       await sendMessage(
         to,
-        `Order #${orderId}\nCustomer: ${customerName}\nDate: ${orderDate}\nStatus: ${orderStatus}`
+        `Order #${orderId}\nCustomer: ${customerName}\nDate: ${orderDate}\nStatus: ${orderStatus}\nAmount: ${totalAmount}`
       );
     }
     
@@ -407,6 +623,13 @@ app.post('/webhook', async (req, res) => {
 
     if (message.type === 'text') {
       const text = message.text.body.toLowerCase().trim();
+      const session = userSessions.get(from) || {};
+      
+      // Handle order information collection
+      if (session.pendingOrder && !session.orderInfo) {
+        await processOrderInformation(from, message.text.body);
+        return res.sendStatus(200);
+      }
       
       // Handle greetings
       if (['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening'].includes(text)) {
@@ -450,6 +673,36 @@ app.post('/webhook', async (req, res) => {
       await sendMessage(from, "I'm your Jumia Seller Assistant. Type 'products' to view your items or 'orders' to check orders.");
     }
 
+    if (message.type === 'interactive') {
+      const interactiveType = message.interactive.type;
+      let responseId = '';
+
+      if (interactiveType === 'button_reply') {
+        responseId = message.interactive.button_reply.id;
+      } else if (interactiveType === 'list_reply') {
+        responseId = message.interactive.list_reply.id;
+      }
+
+      if (responseId.startsWith('product_')) {
+        const productId = responseId.replace('product_', '');
+        await sendProductDetails(from, productId);
+      } else if (responseId.startsWith('order_')) {
+        const productId = responseId.replace('order_', '');
+        await initiateOrder(from, productId);
+      } else if (responseId.startsWith('confirm_order_')) {
+        const productId = responseId.replace('confirm_order_', '');
+        await sendMessage(from, "Order confirmed! We'll process it shortly. Thank you for your order!");
+        // Clear session
+        userSessions.delete(from);
+      } else if (responseId === 'cancel_order') {
+        await sendMessage(from, "Order cancelled. Type 'products' to browse other items.");
+        // Clear session
+        userSessions.delete(from);
+      } else if (responseId === 'menu') {
+        await sendJumiaProducts(from);
+      }
+    }
+
     res.sendStatus(200);
   } catch (error) {
     console.error('Webhook error:', error);
@@ -468,7 +721,8 @@ app.get('/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       service: 'Jumia WhatsApp Seller Bot',
       jumiaApi: JUMIA_API_URL,
-      tokenStatus: token ? 'Valid' : 'Invalid'
+      tokenStatus: token ? 'Valid' : 'Invalid',
+      activeSessions: userSessions.size
     });
   } catch (error) {
     res.status(500).json({
