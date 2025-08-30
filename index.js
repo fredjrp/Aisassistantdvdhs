@@ -45,7 +45,7 @@ validateEnvironment();
 async function fetchJumiaProducts(category = '', limit = 10) {
   try {
     // Note: This is a placeholder URL - you'll need to replace it with the actual Jumia API endpoint
-    const apiUrl = `https://api.jumia.com/v1/products${category ? `?category=${category}` : ''}&limit=${limit}`;
+     const apiUrl = `https://vendorcenter.jumia.com/api/catalog/products?limit=${limit}${category ? `&category=${category}` : ''}`;   
     
     const response = await axios.get(apiUrl, {
       headers: {
@@ -298,3 +298,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Jumia WhatsApp bot running on port ${PORT}`);
 });
+
