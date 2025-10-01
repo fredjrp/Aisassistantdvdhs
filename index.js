@@ -30,7 +30,7 @@ const db = admin.firestore();
 
 async function initializeCollections() {
   try {
-    const collections = ['users', 'transactions', 'clients', 'products', 'exports', 'whatsapp_logs'];
+    const collections = ['users', 'transactions', 'clients', 'products', 'exports', 'whatsapp_logs', 'conversations'];
     for (const col of collections) {
       const snapshot = await db.collection(col).limit(1).get();
       if (snapshot.empty) {
@@ -105,7 +105,7 @@ async function generateAIResponse(prompt, phoneNumber, context = "") {
       
       Today's Activity:
       - Transactions: ${todaysTransactions.length}
-      - Total Sales: KES ${todaysTransactions.reduce((sum, t) => sum + t.totalAmount, 0)}
+      - Total Sales: KES ${todaysTransactions.reduce((sum, t) => sum + (t.totalAmount || 0), 0)}
       
       Your Clients:
       ${clients.length > 0 ? clients.map(c => `- ${c.name} (${c.phoneNumber})`).join('\n') : 'No clients yet'}
@@ -373,6 +373,8 @@ app.post('/webhook', async (req, res) => {
         responseId = message.interactive.list_reply.id;
       }
 
+      console.log('Interactive response:', responseId);
+
       if (responseId === 'role_admin' || responseId === 'role_personnel') {
         await db.collection('users').doc(from).update({
           role: responseId.replace('role_', ''),
@@ -463,33 +465,38 @@ async function sendRoleSelection(to) {
 async function sendMainMenu(to) {
   try {
     const userDoc = await db.collection('users').doc(to).get();
-    const userRole = userDoc.exists ? userDoc.data().role : null;
+    const userData = userDoc.exists ? userDoc.data() : {};
 
-    if (!userRole) {
+    if (!userData.role) {
       await sendMessage(to, "Please complete registration first by typing 'register'");
       return;
+    }
+
+    // FIXED: Only show 3 buttons max (WhatsApp limit)
+    let buttons = [
+      { type: 'reply', reply: { id: 'menu_log_sale', title: '💰 Log Sale' } },
+      { type: 'reply', reply: { id: 'menu_my_sales', title: '📈 My Sales' } },
+      { type: 'reply', reply: { id: 'menu_clients', title: '👥 Clients' } }
+    ];
+
+    // Add admin-only option as separate menu
+    if (userData.role === 'admin') {
+      buttons = [
+        { type: 'reply', reply: { id: 'menu_log_sale', title: '💰 Log Sale' } },
+        { type: 'reply', reply: { id: 'menu_my_sales', title: '📈 My Sales' } },
+        { type: 'reply', reply: { id: 'menu_report', title: '📊 Admin Report' } }
+      ];
     }
 
     const interactiveData = {
       type: 'button',
       body: {
-        text: `📊 Accounting Menu (${userRole})\nSelect an action:`
+        text: `📊 Accounting Menu (${userData.role})\nSelect an action:`
       },
       action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'menu_log_sale', title: '💰 Log Sale' } },
-          { type: 'reply', reply: { id: 'menu_my_sales', title: '📈 My Sales' } },
-          { type: 'reply', reply: { id: 'menu_clients', title: '👥 Clients' } }
-        ]
+        buttons: buttons
       }
     };
-
-    // Add admin-only options
-    if (userRole === 'admin') {
-      interactiveData.action.buttons.push(
-        { type: 'reply', reply: { id: 'menu_report', title: '📊 Report' } }
-      );
-    }
 
     await sendInteractiveMessage(to, interactiveData);
   } catch (error) {
@@ -538,9 +545,6 @@ async function handleLogSaleText(to, text, session) {
         } else {
           await sendMessage(to, '❌ Please enter valid numbers. Try "200 2" or just "200":');
         }
-        break;
-
-      case 1: // Client selection (handled in interactive)
         break;
 
       case 2: // New client name
@@ -774,6 +778,12 @@ async function confirmTransaction(to) {
     const session = getUserSession(to);
     const transactionData = session.transactionData;
     
+    if (!transactionData.productOrService || !transactionData.clientName) {
+      await sendMessage(to, "❌ Missing transaction data. Please start over.");
+      session.currentFlow = null;
+      return;
+    }
+    
     // Get user data
     const userDoc = await db.collection('users').doc(to).get();
     const userData = userDoc.exists ? userDoc.data() : {};
@@ -857,6 +867,12 @@ async function confirmTransaction(to) {
   } catch (error) {
     console.error('Transaction confirmation error:', error);
     await sendMessage(to, "❌ Failed to record transaction. Please try again.");
+    
+    // Reset session on error
+    const session = getUserSession(to);
+    session.currentFlow = null;
+    session.step = 0;
+    session.transactionData = {};
   }
 }
 
@@ -895,10 +911,10 @@ async function showMySalesToday(to) {
     }
     
     const totals = transactions.reduce((acc, t) => {
-      acc.revenue += t.totalAmount;
-      acc.profit += t.profit;
-      acc.savings += t.savings;
-      acc.tax += t.tax;
+      acc.revenue += t.totalAmount || 0;
+      acc.profit += t.profit || 0;
+      acc.savings += t.savings || 0;
+      acc.tax += t.tax || 0;
       return acc;
     }, { revenue: 0, profit: 0, savings: 0, tax: 0 });
     
@@ -974,10 +990,10 @@ async function generateDailyReport(to) {
     }
     
     const totals = transactions.reduce((acc, t) => {
-      acc.revenue += t.totalAmount;
-      acc.profit += t.profit;
-      acc.savings += t.savings;
-      acc.tax += t.tax;
+      acc.revenue += t.totalAmount || 0;
+      acc.profit += t.profit || 0;
+      acc.savings += t.savings || 0;
+      acc.tax += t.tax || 0;
       return acc;
     }, { revenue: 0, profit: 0, savings: 0, tax: 0 });
     
@@ -987,7 +1003,7 @@ async function generateDailyReport(to) {
       if (!userTotals[t.userNumber]) {
         userTotals[t.userNumber] = { revenue: 0, transactions: 0, userName: t.userName };
       }
-      userTotals[t.userNumber].revenue += t.totalAmount;
+      userTotals[t.userNumber].revenue += t.totalAmount || 0;
       userTotals[t.userNumber].transactions += 1;
     });
     
