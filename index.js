@@ -1,496 +1,1054 @@
-// server.js — All-in-one backend for Jumia Seller + WhatsApp + Admin
-// ---------------------------------------------------------------
-// 1) READ THIS FIRST — REQUIRED ENV VARS
-// PORT=10000
-// ADMIN_PASSWORD=replace-me
-// PUBLIC_ORIGIN=https://yourdomain.onrender.com
-//
-// JUMIA_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-// JUMIA_REFRESH_TOKEN=copy-from-vendor-center
-// JUMIA_API_BASE=https://vendor-api.jumia.com
-// JUMIA_FEE_PCT=10
-// SHIPPING_COST_FLAT=0
-//
-// WHATSAPP_TOKEN=EAAG...
-// PHONE_NUMBER_ID=123456789012345
-// ADMIN_ALERT_PHONE=2547XXXXXXXX
-
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
 const cors = require('cors');
-const morgan = require('morgan');
-const cron = require('node-cron');
-const qs = require('querystring');
+const admin = require('firebase-admin');
+const crypto = require('crypto');
+const ExcelJS = require('exceljs');
 
-// --- ENV ---
+const app = express();
+app.use(express.json());
+
+const corsOptions = {
+  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
 const {
-  PORT = 10000,
-  ADMIN_PASSWORD,
-  PUBLIC_ORIGIN,
-  JUMIA_CLIENT_ID,
-  JUMIA_REFRESH_TOKEN,
-  JUMIA_API_BASE = 'https://vendor-api.jumia.com',
-  JUMIA_FEE_PCT = '10',
-  SHIPPING_COST_FLAT = '0',
-  WHATSAPP_TOKEN,
+  WHATSAPP_ACCESS_TOKEN,
+  WHATSAPP_WEBHOOK_SECRET,
+  WEBHOOK_VERIFY_TOKEN,
   PHONE_NUMBER_ID,
-  ADMIN_ALERT_PHONE
+  FIREBASE_PROJECT_ID,
+  FIREBASE_PRIVATE_KEY,
+  FIREBASE_CLIENT_EMAIL,
+  DEFAULT_CURRENCY = 'KES',
+  BUSINESS_NAME = 'Cyber Cafe & Dropshipping',
+  OPENROUTER_API_KEY,
+  EXPORT_EXPIRY_DAYS = '7'
 } = process.env;
 
-if (!ADMIN_PASSWORD) console.warn('⚠️ Set ADMIN_PASSWORD!');
-if (!JUMIA_CLIENT_ID || !JUMIA_REFRESH_TOKEN) console.warn('⚠️ Set JUMIA_CLIENT_ID & JUMIA_REFRESH_TOKEN!');
-if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) console.warn('⚠️ Set WHATSAPP_TOKEN & PHONE_NUMBER_ID!');
+// Firebase Initialization
+const serviceAccount = {
+  projectId: FIREBASE_PROJECT_ID,
+  privateKey: FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  clientEmail: FIREBASE_CLIENT_EMAIL
+};
 
-// --- APP ---
-const app = express();
-app.use(express.json({ limit: '1mb' }));
-app.use(morgan('dev'));
-app.use(cors(PUBLIC_ORIGIN ? { origin: PUBLIC_ORIGIN } : {}));
-
-// --- DB (SQLite) ---
-const DB_FILE = path.join(process.cwd(), 'data.db');
-const db = new sqlite3.Database(DB_FILE);
-
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS products(
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    description TEXT,
-    price REAL,
-    cost REAL DEFAULT 0,
-    stock INTEGER DEFAULT 0,
-    image_url TEXT,
-    jumia_url TEXT,
-    updated_at TEXT
-  )`);
-  db.run(`CREATE TABLE IF NOT EXISTS orders(
-    id TEXT PRIMARY KEY,
-    product_id TEXT,
-    quantity INTEGER,
-    status TEXT,
-    customer_name TEXT,
-    customer_phone TEXT,
-    total REAL,
-    fees REAL,
-    profit REAL,
-    created_at TEXT,
-    updated_at TEXT,
-    shipment_due_date TEXT
-  )`);
-  db.run(`CREATE TABLE IF NOT EXISTS settings(
-    key TEXT PRIMARY KEY,
-    value TEXT
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_products_updated ON products(updated_at)`);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
 });
 
-const qRun = (sql, params=[]) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err){ if(err) reject(err); else resolve(this); });
-});
-const qGet = (sql, params=[]) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err,row)=>{ if(err) reject(err); else resolve(row); });
-});
-const qAll = (sql, params=[]) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err,rows)=>{ if(err) reject(err); else resolve(rows); });
+const db = admin.firestore();
+const bucket = admin.storage().bucket();
+
+// Core Accounting Engine
+class AccountingEngine {
+  static calculateProfit(transactionData, productConfig = null) {
+    const { quantity, unitPrice, totalAmount, costPrice } = transactionData;
+    
+    let actualCostPrice = costPrice;
+    
+    if (!actualCostPrice && productConfig && productConfig.defaultCostPrice) {
+      actualCostPrice = productConfig.defaultCostPrice;
+    }
+    
+    const revenue = totalAmount || (quantity * unitPrice);
+    const cost = actualCostPrice ? (actualCostPrice * quantity) : 0;
+    const profit = revenue - cost;
+    
+    return {
+      revenue,
+      cost,
+      profit: Math.round(profit * 100) / 100,
+      costPrice: actualCostPrice
+    };
+  }
+  
+  static calculateSavings(profit) {
+    return Math.round((profit * 0.25) * 100) / 100;
+  }
+  
+  static calculateTax(profit) {
+    return Math.round((profit * 0.15) * 100) / 100;
+  }
+}
+
+// Transaction Validator
+class TransactionValidator {
+  static validateTransaction(data) {
+    const errors = [];
+    
+    if (!data.quantity || data.quantity < 1) errors.push("Quantity must be at least 1");
+    if (!data.unitPrice || data.unitPrice <= 0) errors.push("Unit price must be positive");
+    if (!data.paymentMethod) errors.push("Payment method is required");
+    if (!data.productOrService) errors.push("Product/service is required");
+    if (!data.clientName) errors.push("Client name is required");
+    
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+  
+  static validateProfit(profitData) {
+    if (profitData.profit < 0) {
+      return {
+        warning: true,
+        message: "⚠️ This transaction shows negative profit. Please confirm if this is correct."
+      };
+    }
+    return { warning: false };
+  }
+}
+
+// Excel Export Service
+class ExcelExportService {
+  async generateTransactionReport(transactions, filters = {}) {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Transactions');
+    
+    worksheet.columns = [
+      { header: 'Transaction ID', key: 'transactionId', width: 20 },
+      { header: 'Timestamp', key: 'timestamp', width: 20 },
+      { header: 'User Name', key: 'userName', width: 15 },
+      { header: 'Product/Service', key: 'productOrService', width: 20 },
+      { header: 'Quantity', key: 'quantity', width: 10 },
+      { header: 'Unit Price', key: 'unitPrice', width: 12 },
+      { header: 'Total Amount', key: 'totalAmount', width: 12 },
+      { header: 'Cost Price', key: 'costPrice', width: 12 },
+      { header: 'Profit', key: 'profit', width: 12 },
+      { header: 'Savings (25%)', key: 'savings25', width: 15 },
+      { header: 'Tax (15%)', key: 'tax15', width: 12 },
+      { header: 'Payment Method', key: 'paymentMethod', width: 15 },
+      { header: 'Client Name', key: 'clientName', width: 15 },
+      { header: 'Client Phone', key: 'clientPhone', width: 15 },
+      { header: 'Notes', key: 'notes', width: 20 },
+      { header: 'Source', key: 'source', width: 12 },
+      { header: 'Status', key: 'status', width: 12 }
+    ];
+    
+    transactions.forEach(transaction => {
+      const savings = AccountingEngine.calculateSavings(transaction.profit);
+      const tax = AccountingEngine.calculateTax(transaction.profit);
+      
+      worksheet.addRow({
+        transactionId: transaction.transactionId,
+        timestamp: transaction.createdAt.toDate().toISOString(),
+        userName: transaction.userName,
+        productOrService: transaction.productOrService,
+        quantity: transaction.quantity,
+        unitPrice: transaction.unitPrice,
+        totalAmount: transaction.totalAmount,
+        costPrice: transaction.costPrice,
+        profit: transaction.profit,
+        savings25: savings,
+        tax15: tax,
+        paymentMethod: transaction.paymentMethod,
+        clientName: transaction.clientName,
+        clientPhone: transaction.clientPhone,
+        notes: transaction.notes,
+        source: transaction.source,
+        status: transaction.status
+      });
+    });
+    
+    return workbook;
+  }
+  
+  async uploadToStorage(workbook, exportId) {
+    const buffer = await workbook.xlsx.writeBuffer();
+    const filePath = `exports/${exportId}.xlsx`;
+    
+    const file = bucket.file(filePath);
+    await file.save(buffer, {
+      metadata: {
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }
+    });
+    
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000
+    });
+    
+    return url;
+  }
+}
+
+// Edit Request System
+class EditRequestSystem {
+  static async createEditRequest(transactionId, userId, changes, reason) {
+    const transactionRef = db.collection('transactions').doc(transactionId);
+    const transactionDoc = await transactionRef.get();
+    
+    if (!transactionDoc.exists) {
+      throw new Error("Transaction not found");
+    }
+    
+    const transaction = transactionDoc.data();
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    
+    if (transaction.createdBy !== userId && transaction.createdAt.toDate() < fiveMinutesAgo) {
+      throw new Error("Edit window expired. Request admin approval.");
+    }
+    
+    const editRequest = {
+      requestedBy: userId,
+      requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      reason,
+      changes,
+      status: 'pending'
+    };
+    
+    await transactionRef.update({
+      status: 'edit_requested',
+      editRequests: admin.firestore.FieldValue.arrayUnion(editRequest)
+    });
+    
+    return editRequest;
+  }
+}
+
+// AI Assistant
+class AIAssistant {
+  static generateConfirmationMessage(transactionData, calculations) {
+    return `✅ Transaction Recorded:\n\n` +
+      `📦 ${transactionData.quantity} x ${transactionData.productOrService}\n` +
+      `💰 Amount: ${DEFAULT_CURRENCY} ${transactionData.totalAmount}\n` +
+      `💵 Profit: ${DEFAULT_CURRENCY} ${calculations.profit}\n` +
+      `🏦 Savings (25%): ${DEFAULT_CURRENCY} ${calculations.savings}\n` +
+      `🏛️ Tax (15%): ${DEFAULT_CURRENCY} ${calculations.tax}\n` +
+      `👤 Client: ${transactionData.clientName} ${transactionData.clientPhone}\n` +
+      `📋 Ref: ${transactionData.transactionId}\n` +
+      `⏰ Time: ${new Date().toLocaleString()}`;
+  }
+  
+  static async handleNaturalLanguageQuery(userMessage, userRole) {
+    if (userRole !== 'admin') {
+      return "Natural language queries are available for admins only.";
+    }
+    
+    const intents = {
+      'photocopy sales': { product: 'photocopy', period: 'week' },
+      'printing this week': { product: 'printing', period: 'week' },
+      'today revenue': { metric: 'revenue', period: 'today' }
+    };
+    
+    const matchedIntent = Object.keys(intents).find(intent => 
+      userMessage.toLowerCase().includes(intent)
+    );
+    
+    if (matchedIntent) {
+      return await generateQuickReport(intents[matchedIntent]);
+    }
+    
+    return "I can help with sales reports. Try: 'photocopy sales' or 'today revenue'";
+  }
+}
+
+// Utility Functions
+async function logMessage(direction, messageData) {
+  try {
+    const logData = {
+      ...messageData,
+      direction,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    Object.keys(logData).forEach(key => {
+      if (logData[key] === undefined) {
+        delete logData[key];
+      }
+    });
+
+    await db.collection('whatsapp_logs').add(logData);
+  } catch (err) {
+    console.error('❌ Failed to log message:', err);
+  }
+}
+
+async function sendMessage(to, text) {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: text }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+    
+    await logMessage('outgoing', {
+      to,
+      from: PHONE_NUMBER_ID,
+      type: 'text',
+      message: { text: { body: text } },
+      messageId: response.data.messages?.[0]?.id
+    });
+
+    return response;
+  } catch (err) {
+    console.error('❌ Send message error:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
+async function sendInteractiveMessage(to, interactiveData) {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: interactiveData
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+    
+    await logMessage('outgoing', {
+      to,
+      from: PHONE_NUMBER_ID,
+      type: 'interactive',
+      message: interactiveData,
+      messageId: response.data.messages?.[0]?.id
+    });
+
+    return response;
+  } catch (err) {
+    console.error('❌ Interactive message error:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
+async function getUserRole(phoneNumber) {
+  try {
+    const userDoc = await db.collection('users').doc(phoneNumber).get();
+    if (userDoc.exists) {
+      return userDoc.data().role;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error getting user role:', error);
+    return null;
+  }
+}
+
+// WhatsApp Message Flows
+async function sendMainMenu(to, userRole) {
+  if (userRole === 'admin') {
+    const interactiveData = {
+      type: 'button',
+      body: { text: "👑 Admin Menu - Select Action:" },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'todays_report', title: '📊 Today\'s Report' } },
+          { type: 'reply', reply: { id: 'custom_report', title: '📅 Custom Report' } },
+          { type: 'reply', reply: { id: 'download_excel', title: '📥 Export Excel' } },
+          { type: 'reply', reply: { id: 'manage_products', title: '🛍️ Products' } }
+        ]
+      }
+    };
+    await sendInteractiveMessage(to, interactiveData);
+  } else {
+    const interactiveData = {
+      type: 'button',
+      body: { text: "📊 Accounting Menu - Select Action:" },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'log_sale', title: '💰 Log Sale' } },
+          { type: 'reply', reply: { id: 'list_clients', title: '👥 Clients' } },
+          { type: 'reply', reply: { id: 'my_sales_today', title: '📈 My Sales' } },
+          { type: 'reply', reply: { id: 'help', title: '❓ Help' } }
+        ]
+      }
+    };
+    await sendInteractiveMessage(to, interactiveData);
+  }
+}
+
+async function sendProductSelection(to) {
+  const interactiveData = {
+    type: 'list',
+    header: { type: 'text', text: '🛍️ Select Product/Service' },
+    body: { text: 'Choose from available products:' },
+    action: {
+      button: 'View Products',
+      sections: [{
+        title: 'Cyber Cafe Services',
+        rows: [
+          { id: 'printing_single', title: 'Printing - Single', description: `${DEFAULT_CURRENCY} 20` },
+          { id: 'printing_double', title: 'Printing - Double', description: `${DEFAULT_CURRENCY} 35` },
+          { id: 'photocopy', title: 'Photocopy', description: `${DEFAULT_CURRENCY} 10` },
+          { id: 'internet_hour', title: 'Internet - 1 Hour', description: `${DEFAULT_CURRENCY} 100` }
+        ]
+      }, {
+        title: 'Dropshipping Items', 
+        rows: [
+          { id: 'powerbank', title: 'Power Bank', description: `${DEFAULT_CURRENCY} 1500` },
+          { id: 'phone_case', title: 'Phone Case', description: `${DEFAULT_CURRENCY} 800` }
+        ]
+      }]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
+}
+
+async function sendPaymentMethodSelection(to) {
+  const interactiveData = {
+    type: 'button',
+    body: { text: '💳 Select Payment Method:' },
+    action: {
+      buttons: [
+        { type: 'reply', reply: { id: 'payment_cash', title: '💵 Cash' } },
+        { type: 'reply', reply: { id: 'payment_mpesa', title: '📱 MPESA' } },
+        { type: 'reply', reply: { id: 'payment_card', title: '💳 Card' } }
+      ]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
+}
+
+async function sendClientSelection(to, clients) {
+  if (clients.length === 0) {
+    await sendMessage(to, '👤 No existing clients found. Please type the client name:');
+    return;
+  }
+
+  const interactiveData = {
+    type: 'list',
+    header: { type: 'text', text: '👥 Select Client' },
+    body: { text: 'Choose existing client or select "New Client":' },
+    action: {
+      button: 'Select Client',
+      sections: [{
+        title: 'Existing Clients',
+        rows: clients.slice(0, 8).map(client => ({
+          id: `client_${client.clientId}`,
+          title: client.name,
+          description: client.phoneNumber
+        })).concat([{
+          id: 'client_new',
+          title: '➕ New Client',
+          description: 'Add new client'
+        }])
+      }]
+    }
+  };
+  await sendInteractiveMessage(to, interactiveData);
+}
+
+// Transaction Management
+async function createTransaction(transactionData) {
+  try {
+    const transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Get product config
+    const productDoc = await db.collection('config/products').doc(transactionData.productOrService).get();
+    const productConfig = productDoc.exists ? productDoc.data() : null;
+    
+    // Calculate financials
+    const calculations = AccountingEngine.calculateProfit(transactionData, productConfig);
+    const savings = AccountingEngine.calculateSavings(calculations.profit);
+    const tax = AccountingEngine.calculateTax(calculations.profit);
+    
+    // Get user data
+    const userDoc = await db.collection('users').doc(transactionData.userNumber).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+    
+    const transaction = {
+      transactionId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: transactionData.userNumber,
+      userNumber: transactionData.userNumber,
+      userName: userData.name || 'Unknown',
+      productOrService: transactionData.productOrService,
+      quantity: transactionData.quantity,
+      unitPrice: transactionData.unitPrice,
+      totalAmount: calculations.revenue,
+      costPrice: calculations.costPrice,
+      profit: calculations.profit,
+      expenses: transactionData.expenses || [],
+      clientId: transactionData.clientId,
+      clientName: transactionData.clientName,
+      clientPhone: transactionData.clientPhone,
+      paymentMethod: transactionData.paymentMethod,
+      notes: transactionData.notes || '',
+      source: transactionData.source || 'cybercafe',
+      status: 'recorded'
+    };
+    
+    await db.collection('transactions').doc(transactionId).set(transaction);
+    
+    // Update client if exists, otherwise create
+    if (transactionData.clientId) {
+      await db.collection('clients').doc(transactionData.clientId).update({
+        lastTransaction: admin.firestore.FieldValue.serverTimestamp(),
+        totalTransactions: admin.firestore.FieldValue.increment(1)
+      });
+    } else {
+      const clientId = `CLIENT_${Date.now()}`;
+      await db.collection('clients').doc(clientId).set({
+        clientId,
+        name: transactionData.clientName,
+        phoneNumber: transactionData.clientPhone,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        totalTransactions: 1,
+        lastTransaction: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+    
+    return {
+      transaction,
+      calculations: {
+        ...calculations,
+        savings,
+        tax
+      }
+    };
+  } catch (error) {
+    console.error('Error creating transaction:', error);
+    throw error;
+  }
+}
+
+// Report Generation
+async function generateTodaysReport(userNumber) {
+  try {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    
+    let transactionsQuery = db.collection('transactions')
+      .where('createdAt', '>=', startOfDay)
+      .where('createdAt', '<=', endOfDay);
+    
+    const userRole = await getUserRole(userNumber);
+    if (userRole !== 'admin') {
+      transactionsQuery = transactionsQuery.where('userNumber', '==', userNumber);
+    }
+    
+    const snapshot = await transactionsQuery.get();
+    const transactions = snapshot.docs.map(doc => doc.data());
+    
+    const totals = transactions.reduce((acc, transaction) => {
+      acc.revenue += transaction.totalAmount;
+      acc.profit += transaction.profit;
+      acc.savings += AccountingEngine.calculateSavings(transaction.profit);
+      acc.tax += AccountingEngine.calculateTax(transaction.profit);
+      return acc;
+    }, { revenue: 0, profit: 0, savings: 0, tax: 0 });
+    
+    return {
+      summary: `📊 Today's Report (${new Date().toLocaleDateString()})\n\n` +
+               `💰 Total Revenue: ${DEFAULT_CURRENCY} ${totals.revenue.toFixed(2)}\n` +
+               `💵 Total Profit: ${DEFAULT_CURRENCY} ${totals.profit.toFixed(2)}\n` +
+               `🏦 Total Savings: ${DEFAULT_CURRENCY} ${totals.savings.toFixed(2)}\n` +
+               `🏛️ Total Tax: ${DEFAULT_CURRENCY} ${totals.tax.toFixed(2)}\n` +
+               `📈 Total Transactions: ${transactions.length}`,
+      transactions,
+      totals
+    };
+  } catch (error) {
+    console.error('Error generating report:', error);
+    throw error;
+  }
+}
+
+async function initiateExport(userNumber, filters = {}) {
+  try {
+    const exportId = `EXP_${Date.now()}`;
+    
+    await db.collection('exports').doc(exportId).set({
+      exportId,
+      requestedBy: userNumber,
+      type: filters.type || 'custom',
+      query: filters,
+      status: 'processing',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+    
+    // Process export in background
+    processExport(exportId, filters);
+    
+    return exportId;
+  } catch (error) {
+    console.error('Error initiating export:', error);
+    throw error;
+  }
+}
+
+async function processExport(exportId, filters) {
+  try {
+    let transactionsQuery = db.collection('transactions');
+    
+    if (filters.dateFrom && filters.dateTo) {
+      const startDate = new Date(filters.dateFrom);
+      const endDate = new Date(filters.dateTo);
+      endDate.setHours(23, 59, 59, 999);
+      
+      transactionsQuery = transactionsQuery
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate);
+    }
+    
+    if (filters.userId) {
+      transactionsQuery = transactionsQuery.where('userNumber', '==', filters.userId);
+    }
+    
+    if (filters.product) {
+      transactionsQuery = transactionsQuery.where('productOrService', '==', filters.product);
+    }
+    
+    const snapshot = await transactionsQuery.get();
+    const transactions = snapshot.docs.map(doc => doc.data());
+    
+    const exportService = new ExcelExportService();
+    const workbook = await exportService.generateTransactionReport(transactions, filters);
+    const fileUrl = await exportService.uploadToStorage(workbook, exportId);
+    
+    await db.collection('exports').doc(exportId).update({
+      status: 'completed',
+      fileUrl,
+      completedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    // Notify user
+    const exportDoc = await db.collection('exports').doc(exportId).get();
+    const exportData = exportDoc.data();
+    
+    await sendMessage(exportData.requestedBy, 
+      `✅ Your export is ready!\n\n` +
+      `📊 Type: ${exportData.type}\n` +
+      `📈 Records: ${transactions.length}\n` +
+      `🔗 Download: ${fileUrl}\n\n` +
+      `This link expires in 7 days.`
+    );
+    
+  } catch (error) {
+    console.error('Error processing export:', error);
+    await db.collection('exports').doc(exportId).update({
+      status: 'failed',
+      error: error.message
+    });
+  }
+}
+
+// User Session Management
+const userSessions = new Map();
+
+function getUserSession(phoneNumber) {
+  if (!userSessions.has(phoneNumber)) {
+    userSessions.set(phoneNumber, {
+      currentFlow: null,
+      transactionData: {},
+      step: 0
+    });
+  }
+  return userSessions.get(phoneNumber);
+}
+
+// Webhook Handlers
+app.get('/', (req, res) => res.send(`✅ ${BUSINESS_NAME} WhatsApp Accounting Bot Running`));
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    business: BUSINESS_NAME
+  });
 });
 
-// --- Helpers ---
-const nowISO = () => new Date().toISOString();
-const pct = parseFloat(JUMIA_FEE_PCT);
-const shipFlat = parseFloat(SHIPPING_COST_FLAT);
+app.get('/webhook', (req, res) => {
+  const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
+  if (mode && token === WEBHOOK_VERIFY_TOKEN) return res.status(200).send(challenge);
+  res.sendStatus(403);
+});
 
-// --- Auth middleware for admin ---
-function requireAdmin(req,res,next){
-  const key = req.get('x-admin-key');
-  if(!key || key !== ADMIN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
+function validateWebhookSignature(req, res, next) {
+  const signature = req.headers['x-hub-signature-256'];
+  
+  if (!signature) {
+    return res.status(401).json({ error: 'Missing signature' });
+  }
+  
+  const expectedSignature = crypto
+    .createHmac('sha256', WHATSAPP_WEBHOOK_SECRET)
+    .update(JSON.stringify(req.body))
+    .digest('hex');
+    
+  if (signature !== `sha256=${expectedSignature}`) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  
   next();
 }
 
-// --- Jumia OAuth (refresh token) ---
-let cachedAccessToken = null;
-let cachedExpTs = 0;
-async function getJumiaAccessToken(){
-  const now = Date.now()/1000;
-  if (cachedAccessToken && now < cachedExpTs - 60) return cachedAccessToken;
-  const url = `${JUMIA_API_BASE}/auth/realms/acl/protocol/openid-connect/token`;
-  const body = qs.stringify({
-    grant_type: 'refresh_token',
-    client_id: JUMIA_CLIENT_ID,
-    refresh_token: JUMIA_REFRESH_TOKEN
-  });
-  const { data } = await axios.post(url, body, {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    timeout: 10000
-  });
-  cachedAccessToken = data.access_token;
-  cachedExpTs = Math.floor(Date.now()/1000) + (data.expires_in || 600);
-  return cachedAccessToken;
-}
+app.post('/webhook', validateWebhookSignature, async (req, res) => {
+  try {
+    const changes = req.body.entry?.[0]?.changes?.[0];
+    const message = changes?.value?.messages?.[0];
+    const from = message?.from;
 
-// --- Jumia API service (adjust paths if needed) ---
-async function jumiaGet(path, params={}){
-  const token = await getJumiaAccessToken();
-  const url = `${JUMIA_API_BASE}${path}`;
-  const { data } = await axios.get(url, {
-    params,
-    headers: { Authorization: `Bearer ${token}` },
-    timeout: 15000
-  });
-  return data;
-}
+    if (!message || !from) return res.sendStatus(200);
 
-// GUESS endpoints (edit if your dashboard shows different):
-// Products: /catalog/products
-// Orders:   /orders
+    console.log('Webhook received:', message.type, 'from:', from);
 
-async function fetchJumiaProducts(limit=50){
-  // TODO: if your API needs pagination, loop here
-  const data = await jumiaGet('/catalog/products', { limit });
-  // Normalize product shape; adjust keys if Jumia differs
-  const list = Array.isArray(data?.products) ? data.products : (Array.isArray(data) ? data : []);
-  return list.map(p => ({
-    id: p.id || p.sku || p.productId,
-    title: p.title || p.name,
-    description: p.description || '',
-    price: Number(p.price || p.salePrice || 0),
-    stock: Number(p.stock || p.quantity || 0),
-    image_url: extractImageUrl(p),
-    jumia_url: p.url || p.productUrl || '',
-    updated_at: nowISO()
-  })).filter(x => x.id);
-}
-
-// Helper to extract image URL from various Jumia response formats
-function extractImageUrl(product) {
-  if (!product) return '';
-  
-  // Handle direct string
-  if (typeof product.image === 'string') return product.image;
-  
-  // Handle object with url property
-  if (typeof product.image === 'object' && product.image !== null) {
-    if (product.image.url) return product.image.url;
-    if (product.image.link) return product.image.link;
-    if (product.image.primary) return product.image.primary;
-    if (product.image.originalUrl) return product.image.originalUrl;
-  }
-  
-  // Handle images array
-  if (Array.isArray(product.images) && product.images.length > 0) {
-    const firstImage = product.images[0];
-    if (typeof firstImage === 'string') return firstImage;
-    if (typeof firstImage === 'object' && firstImage !== null) {
-      if (firstImage.url) return firstImage.url;
-      if (firstImage.link) return firstImage.link;
-      if (firstImage.primary) return firstImage.primary;
-      if (firstImage.originalUrl) return firstImage.originalUrl;
-    }
-  }
-  
-  // Handle imageUrl field
-  if (product.imageUrl) return product.imageUrl;
-  
-  return '';
-}
-
-async function fetchJumiaOrders(params = { status: 'pending', limit: 100 }){
-  const data = await jumiaGet('/orders', params);
-  const list = Array.isArray(data?.orders) ? data.orders : (Array.isArray(data) ? data : []);
-  return list.map(o => {
-    const product = Array.isArray(o.items) ? o.items[0] : null;
-    const productId = product?.productId || product?.sku || o.productId;
-    const qty = Number(product?.quantity || o.quantity || 1);
-    const price = Number(product?.price || o.price || 0);
-    const total = price * qty;
-    const cost = Number(product?.cost || 0); // we'll override from our DB if present
-    return {
-      id: o.id || o.orderId,
-      product_id: productId,
-      quantity: qty,
-      status: o.status || params.status || 'pending',
-      customer_name: o.customer?.name || '',
-      customer_phone: o.customer?.phone || '',
-      price,
-      total,
-      cost,
-      created_at: o.createdAt || nowISO(),
-      updated_at: o.updatedAt || nowISO(),
-      shipment_due_date: o.shipmentDueDate || null
-    };
-  }).filter(x => x.id && x.product_id);
-}
-
-// --- WhatsApp helpers ---
-async function sendWhatsAppText(to, body){
-  try{
-    const url = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'text',
-      text: { body }
-    };
-    await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
+    await logMessage('incoming', {
+      from,
+      type: message.type,
+      message: message,
+      userId: from
     });
-  }catch(err){
-    console.error('WA text error:', err.response?.data || err.message);
+
+    const userRole = await getUserRole(from);
+    const session = getUserSession(from);
+
+    // Handle menu command
+    if (message.text?.body?.toLowerCase().trim() === 'menu') {
+      await sendMainMenu(from, userRole);
+      return res.sendStatus(200);
+    }
+
+    // Handle interactive messages
+    let userInput = '';
+    if (message.type === 'text') {
+      userInput = message.text.body;
+    } else if (message.type === 'interactive') {
+      if (message.interactive.type === 'button_reply') {
+        userInput = message.interactive.button_reply.id;
+      } else if (message.interactive.type === 'list_reply') {
+        userInput = message.interactive.list_reply.id;
+      }
+    }
+
+    // Handle main menu options
+    if (['log_sale', 'todays_report', 'custom_report', 'download_excel', 'my_sales_today'].includes(userInput)) {
+      session.currentFlow = userInput;
+      session.step = 0;
+      session.transactionData = {};
+    }
+
+    // Process based on current flow
+    switch (session.currentFlow) {
+      case 'log_sale':
+        await handleLogSaleFlow(from, userInput, session);
+        break;
+      case 'todays_report':
+        await handleTodaysReport(from, userRole);
+        session.currentFlow = null;
+        break;
+      case 'my_sales_today':
+        await handleMySalesToday(from);
+        session.currentFlow = null;
+        break;
+      case 'download_excel':
+        await handleDownloadExcel(from);
+        session.currentFlow = null;
+        break;
+      default:
+        if (userRole === 'admin') {
+          await sendMainMenu(from, 'admin');
+        } else {
+          await sendMainMenu(from, 'personnel');
+        }
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.sendStatus(500);
+  }
+});
+
+// Flow Handlers
+async function handleLogSaleFlow(from, userInput, session) {
+  try {
+    switch (session.step) {
+      case 0: // Start - get amount or price quantity
+        await sendMessage(from, '💰 Log Sale - Enter amount received or type "price quantity" (e.g., "200 2"):');
+        session.step = 1;
+        break;
+
+      case 1: // Parse amount/quantity
+        if (userInput.includes(' ')) {
+          const [unitPrice, quantity] = userInput.split(' ').map(Number);
+          if (!isNaN(unitPrice) && !isNaN(quantity)) {
+            session.transactionData.unitPrice = unitPrice;
+            session.transactionData.quantity = quantity;
+            session.transactionData.totalAmount = unitPrice * quantity;
+          }
+        } else {
+          const amount = Number(userInput);
+          if (!isNaN(amount)) {
+            session.transactionData.totalAmount = amount;
+            session.transactionData.quantity = 1;
+            session.transactionData.unitPrice = amount;
+          }
+        }
+
+        if (session.transactionData.unitPrice && session.transactionData.quantity) {
+          await sendProductSelection(from);
+          session.step = 2;
+        } else {
+          await sendMessage(from, '❌ Please enter valid numbers. Try "200 2" or just "200":');
+        }
+        break;
+
+      case 2: // Product selection
+        if (userInput.startsWith('printing_') || userInput === 'photocopy' || userInput === 'internet_hour' || 
+            userInput === 'powerbank' || userInput === 'phone_case') {
+          session.transactionData.productOrService = userInput;
+          session.transactionData.source = userInput === 'powerbank' || userInput === 'phone_case' ? 'dropship' : 'cybercafe';
+          
+          // Get existing clients
+          const clientsSnapshot = await db.collection('clients').limit(10).get();
+          const clients = clientsSnapshot.docs.map(doc => doc.data());
+          
+          await sendClientSelection(from, clients);
+          session.step = 3;
+        } else {
+          await sendProductSelection(from);
+        }
+        break;
+
+      case 3: // Client selection
+        if (userInput === 'client_new') {
+          await sendMessage(from, '👤 Please enter client name:');
+          session.step = 4;
+        } else if (userInput.startsWith('client_')) {
+          const clientId = userInput.replace('client_', '');
+          const clientDoc = await db.collection('clients').doc(clientId).get();
+          if (clientDoc.exists) {
+            const client = clientDoc.data();
+            session.transactionData.clientId = clientId;
+            session.transactionData.clientName = client.name;
+            session.transactionData.clientPhone = client.phoneNumber;
+            await sendPaymentMethodSelection(from);
+            session.step = 5;
+          }
+        }
+        break;
+
+      case 4: // New client name
+        session.transactionData.clientName = userInput;
+        await sendMessage(from, '📱 Please enter client phone number:');
+        session.step = 6;
+        break;
+
+      case 5: // Payment method
+        if (userInput.startsWith('payment_')) {
+          session.transactionData.paymentMethod = userInput.replace('payment_', '');
+          await sendMessage(from, '📝 Any notes? (optional)');
+          session.step = 7;
+        }
+        break;
+
+      case 6: // New client phone
+        session.transactionData.clientPhone = userInput;
+        await sendPaymentMethodSelection(from);
+        session.step = 5;
+        break;
+
+      case 7: // Notes and confirmation
+        if (userInput !== 'payment_cash' && userInput !== 'payment_mpesa' && userInput !== 'payment_card') {
+          session.transactionData.notes = userInput;
+        }
+
+        // Validate transaction
+        const validation = TransactionValidator.validateTransaction(session.transactionData);
+        if (!validation.isValid) {
+          await sendMessage(from, `❌ Validation errors:\n${validation.errors.join('\n')}`);
+          session.currentFlow = null;
+          return;
+        }
+
+        // Create transaction
+        session.transactionData.userNumber = from;
+        const result = await createTransaction(session.transactionData);
+        
+        // Check for profit warning
+        const profitWarning = TransactionValidator.validateProfit(result.calculations);
+        if (profitWarning.warning) {
+          await sendMessage(from, profitWarning.message);
+        }
+
+        // Send confirmation
+        const confirmationMessage = AIAssistant.generateConfirmationMessage(
+          result.transaction, 
+          result.calculations
+        );
+        await sendMessage(from, confirmationMessage);
+
+        // Reset flow
+        session.currentFlow = null;
+        session.step = 0;
+        session.transactionData = {};
+        break;
+    }
+  } catch (error) {
+    console.error('Log sale flow error:', error);
+    await sendMessage(from, '❌ An error occurred. Please try again or type "menu" to restart.');
+    session.currentFlow = null;
   }
 }
 
-async function sendWhatsAppImage(to, imageUrl, caption=''){
-  try{
-    // Ensure imageUrl is a string, not an object
-    let actualImageUrl = imageUrl;
-    if (typeof imageUrl === 'object' && imageUrl !== null) {
-      if (imageUrl.url) actualImageUrl = imageUrl.url;
-      else if (imageUrl.link) actualImageUrl = imageUrl.link;
-      else if (imageUrl.originalUrl) actualImageUrl = imageUrl.originalUrl;
-      else if (imageUrl.primary) actualImageUrl = imageUrl.primary;
+async function handleTodaysReport(from, userRole) {
+  try {
+    const report = await generateTodaysReport(from);
+    await sendMessage(from, report.summary);
+    
+    if (userRole === 'admin') {
+      const interactiveData = {
+        type: 'button',
+        body: { text: '📊 Report Actions:' },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'download_excel', title: '📥 Export Excel' } },
+            { type: 'reply', reply: { id: 'show_breakdown', title: '📈 Show Breakdown' } }
+          ]
+        }
+      };
+      await sendInteractiveMessage(from, interactiveData);
+    }
+  } catch (error) {
+    console.error('Report error:', error);
+    await sendMessage(from, '❌ Error generating report. Please try again.');
+  }
+}
+
+async function handleMySalesToday(from) {
+  try {
+    const report = await generateTodaysReport(from);
+    await sendMessage(from, report.summary);
+  } catch (error) {
+    console.error('My sales error:', error);
+    await sendMessage(from, '❌ Error retrieving your sales. Please try again.');
+  }
+}
+
+async function handleDownloadExcel(from) {
+  try {
+    const exportId = await initiateExport(from, { type: 'daily' });
+    await sendMessage(from, '⏳ Generating Excel export... You will receive a download link when ready.');
+  } catch (error) {
+    console.error('Export error:', error);
+    await sendMessage(from, '❌ Error creating export. Please try again.');
+  }
+}
+
+// API Endpoints
+app.post('/api/transactions', async (req, res) => {
+  try {
+    const transactionData = req.body;
+    const result = await createTransaction(transactionData);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/transactions', async (req, res) => {
+  try {
+    const { dateFrom, dateTo, userId, product } = req.query;
+    let query = db.collection('transactions');
+
+    if (dateFrom && dateTo) {
+      const startDate = new Date(dateFrom);
+      const endDate = new Date(dateTo);
+      endDate.setHours(23, 59, 59, 999);
+      query = query.where('createdAt', '>=', startDate).where('createdAt', '<=', endDate);
+    }
+
+    if (userId) {
+      query = query.where('userNumber', '==', userId);
+    }
+
+    if (product) {
+      query = query.where('productOrService', '==', product);
+    }
+
+    const snapshot = await query.get();
+    const transactions = snapshot.docs.map(doc => doc.data());
+    
+    res.json({ success: true, data: transactions });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/transactions/:id/edit-request', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId, changes, reason } = req.body;
+    
+    const editRequest = await EditRequestSystem.createEditRequest(id, userId, changes, reason);
+    res.json({ success: true, data: editRequest });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/export', async (req, res) => {
+  try {
+    const { filters } = req.body;
+    const exportId = await initiateExport(req.user.phoneNumber, filters);
+    res.json({ success: true, exportId });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/export/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const exportDoc = await db.collection('exports').doc(id).get();
+    
+    if (!exportDoc.exists) {
+      return res.status(404).json({ success: false, error: 'Export not found' });
     }
     
-    const url = `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`;
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'image',
-      image: { 
-        link: actualImageUrl, // IMPORTANT: link is a plain string URL
-        caption: caption.substring(0, 1024) 
-      }
-    };
-    await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
-  }catch(err){
-    console.error('WA image error:', err.response?.data || err.message);
-  }
-}
-
-// --- Upsert helpers ---
-async function upsertProducts(products){
-  const stmt = `INSERT INTO products(id,title,description,price,cost,stock,image_url,jumia_url,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                  title=excluded.title,
-                  description=excluded.description,
-                  price=excluded.price,
-                  stock=excluded.stock,
-                  image_url=excluded.image_url,
-                  jumia_url=excluded.jumia_url,
-                  updated_at=excluded.updated_at`;
-  for (const p of products){
-    await qRun(stmt, [p.id,p.title,p.description,p.price,p.cost||0,p.stock,p.image_url,p.jumia_url,p.updated_at]);
-  }
-}
-
-async function upsertOrders(orders){
-  for (const o of orders){
-    // fetch product cost from DB if present
-    const prod = await qGet('SELECT cost, price, image_url, title, jumia_url FROM products WHERE id=?',[o.product_id]);
-    const cost = prod?.cost ?? o.cost ?? 0;
-    const unitPrice = prod?.price ?? o.price ?? 0;
-    const total = unitPrice * o.quantity;
-    const fees = total * (pct/100);
-    const profit = total - fees - (cost * o.quantity) - shipFlat;
-    
-    await qRun(`INSERT INTO orders(id,product_id,quantity,status,customer_name,customer_phone,total,fees,profit,created_at,updated_at,shipment_due_date)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                  product_id=excluded.product_id,
-                  quantity=excluded.quantity,
-                  status=excluded.status,
-                  customer_name=excluded.customer_name,
-                  customer_phone=excluded.customer_phone,
-                  total=excluded.total,
-                  fees=excluded.fees,
-                  profit=excluded.profit,
-                  updated_at=excluded.updated_at,
-                  shipment_due_date=excluded.shipment_due_date`,
-      [o.id,o.product_id,o.quantity,o.status,o.customer_name,o.customer_phone,total,fees,profit,o.created_at,o.updated_at,o.shipment_due_date]);
-
-    // Notify customer for new/pending orders (simple heuristic: created within last hour)
-    const createdTs = Date.parse(o.created_at || nowISO());
-    if (!isNaN(createdTs) && (Date.now() - createdTs) < 60*60*1000 && o.customer_phone){
-      const caption = `${prod?.title || 'Your order'}\nOrder: ${o.id}\nQty: ${o.quantity}\nTotal: KES ${total.toFixed(2)}\nLink: ${prod?.jumia_url || ''}`;
-      if (prod?.image_url) {
-        await sendWhatsAppImage(o.customer_phone, prod.image_url, caption);
-      } else {
-        await sendWhatsAppText(o.customer_phone, caption);
-      }
-      
-      // Also notify admin
-      if (ADMIN_ALERT_PHONE) {
-        await sendWhatsAppText(ADMIN_ALERT_PHONE, `🛒 New Order: ${o.id}\nProduct: ${prod?.title || o.product_id}\nCustomer: ${o.customer_name}\nTotal: KES ${total.toFixed(2)}`);
-      }
-    }
-  }
-}
-
-// --- Public route (product gallery) ---
-app.get('/', async (req,res)=>{
-  const list = await qAll('SELECT * FROM products ORDER BY updated_at DESC LIMIT 200');
-  const html = `
-  <!doctype html><html><head><meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Products</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;margin:0;background:#fafafa;color:#111}
-    header{padding:16px 20px;background:#111;color:#fff}
-    .grid{display:grid;gap:16px;padding:16px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
-    .card{background:#fff;border:1px solid #eee;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-    .img{aspect-ratio:4/3;background:#f2f2f2;display:flex;align-items:center;justify-content:center;overflow:hidden}
-    .img img{width:100%;height:100%;object-fit:cover}
-    .p{padding:12px}
-    .title{font-weight:600;margin:0 0 6px;font-size:15px;line-height:1.3}
-    .desc{font-size:13px;color:#444;height:38px;overflow:hidden}
-    .row{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
-    .price{font-weight:700}
-    .btn{display:inline-block;background:#111;color:#fff;text-decoration:none;padding:8px 10px;border-radius:8px;font-size:13px}
-  </style>
-  </head><body>
-  <header><h1>Available Products</h1></header>
-  <main>
-    <div class="grid">
-      ${list.map(p=>`
-        <div class="card">
-          <div class="img">
-            ${p.image_url ? `<img src="${p.image_url}" alt="${(p.title||'product').replace(/"/g,'')}" />` : '<span>No image</span>'}
-          </div>
-          <div class="p">
-            <div class="title">${p.title||''}</div>
-            <div class="desc">${(p.description||'').slice(0,120)}</div>
-            <div class="row">
-              <div class="price">KES ${Number(p.price||0).toFixed(2)}</div>
-              ${p.jumia_url ? `<a class="btn" href="${p.jumia_url}" target="_blank" rel="noopener">View</a>`:''}
-            </div>
-            <div class="row" style="margin-top:6px;color:#666;font-size:12px">Stock: ${p.stock||0}</div>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-  </main>
-  </body></html>`;
-  res.setHeader('Content-Type','text/html; charset=utf-8');
-  res.send(html);
-});
-
-// --- Admin routes ---
-app.post('/admin/sync/products', requireAdmin, async (req,res)=>{
-  try{
-    const limit = Number(req.body?.limit || 50);
-    const products = await fetchJumiaProducts(limit);
-    await upsertProducts(products);
-    res.json({ ok:true, count: products.length });
-  }catch(err){
-    console.error('sync products error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Sync failed', detail: err.response?.data || err.message });
+    res.json({ success: true, data: exportDoc.data() });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 
-app.get('/admin/orders', requireAdmin, async (req,res)=>{
-  try{
-    const { status='pending', from, to, limit=100 } = req.query;
-    const fetched = await fetchJumiaOrders({ status, from, to, limit });
-    await upsertOrders(fetched);
-    const rows = await qAll('SELECT * FROM orders WHERE status=? ORDER BY created_at DESC',[status]);
-    res.json({ ok:true, fetched: fetched.length, stored: rows.length, rows });
-  }catch(err){
-    console.error('orders fetch error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Orders fetch failed', detail: err.response?.data || err.message });
-  }
+// Start Server
+const PORT = process.env.PORT || 3000;
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 ${BUSINESS_NAME} Accounting Bot running on port ${PORT}`);
+  console.log(`💰 Default Currency: ${DEFAULT_CURRENCY}`);
+  console.log(`⏰ Started: ${new Date().toISOString()}`);
 });
 
-app.post('/admin/product', requireAdmin, async (req,res)=>{
-  const { id, title, description, price, cost, stock, image_url, jumia_url } = req.body||{};
-  if(!id) return res.status(400).json({ error: 'id required' });
-  try{
-    const exists = await qGet('SELECT id FROM products WHERE id=?',[id]);
-    if (exists){
-      await qRun(`UPDATE products SET 
-        title=COALESCE(?,title),
-        description=COALESCE(?,description),
-        price=COALESCE(?,price),
-        cost=COALESCE(?,cost),
-        stock=COALESCE(?,stock),
-        image_url=COALESCE(?,image_url),
-        jumia_url=COALESCE(?,jumia_url),
-        updated_at=?
-      WHERE id=?`,[title,description,price,cost,stock,image_url,jumia_url,nowISO(),id]);
-    }else{
-      await qRun(`INSERT INTO products(id,title,description,price,cost,stock,image_url,jumia_url,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?)`,[id,title||'',description||'',price||0,cost||0,stock||0,image_url||'',jumia_url||'',nowISO()]);
-    }
-    res.json({ ok:true });
-  }catch(err){
-    console.error('product update error:', err.message);
-    res.status(500).json({ error: 'Update failed', detail: err.message });
-  }
-});
-
-app.post('/admin/order/mark-shipped', requireAdmin, async (req,res)=>{
-  const { id, shipment_due_date } = req.body||{};
-  if(!id) return res.status(400).json({ error: 'id required' });
-  try{
-    await qRun(`UPDATE orders SET status='shipped', updated_at=?, shipment_due_date=COALESCE(?,shipment_due_date) WHERE id=?`,
-      [nowISO(), shipment_due_date || null, id]);
-    res.json({ ok:true });
-  }catch(err){
-    console.error('mark shipped error:', err.message);
-    res.status(500).json({ error: 'Update failed', detail: err.message });
-  }
-});
-
-app.get('/admin/summary', requireAdmin, async (req,res)=>{
-  try{
-    const totals = await qGet(`SELECT 
-      COALESCE(SUM(total),0) as revenue,
-      COALESCE(SUM(fees),0) as fees,
-      COALESCE(SUM(profit),0) as profit
-      FROM orders`);
-    const pending = await qGet(`SELECT COUNT(*) as c FROM orders WHERE status='pending'`);
-    const toShip = await qGet(`SELECT COUNT(*) as c FROM orders WHERE status='pending_shipment'`);
-    res.json({ ok:true, revenue: totals.revenue, fees: totals.fees, profit: totals.profit, pending: pending.c, toShip: toShip.c });
-  }catch(err){
-    res.status(500).json({ error: 'Summary failed', detail: err.message });
-  }
-});
-
-// --- Cron: hourly reminders for upcoming shipments ---
-cron.schedule('15 * * * *', async ()=>{
-  try{
-    const now = Date.now();
-    const soon = now + 24*60*60*1000; // 24h
-    const rows = await qAll(`SELECT id, customer_name, customer_phone, product_id, quantity, shipment_due_date 
-                             FROM orders WHERE status='pending_shipment'`);
-    const due = rows.filter(r => r.shipment_due_date && Date.parse(r.shipment_due_date) <= soon);
-    if (due.length && ADMIN_ALERT_PHONE){
-      const lines = await Promise.all(due.map(async d=>{
-        const p = await qGet('SELECT title FROM products WHERE id=?',[d.product_id]);
-        return `• ${d.id} · ${p?.title||d.product_id} · Qty ${d.quantity} · Due ${d.shipment_due_date}`;
-      }));
-      await sendWhatsAppText(ADMIN_ALERT_PHONE, `⏰ Shipment reminders (next 24h):\n${lines.join('\n')}`);
-    }
-  }catch(err){
-    console.error('cron reminder error:', err.message);
-  }
-}, { timezone: 'Africa/Nairobi' });
-
-// --- Start server ---
-app.listen(PORT, ()=> {
-  console.log(`✅ Server listening on :${PORT}`);
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });
