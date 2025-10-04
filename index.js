@@ -4,18 +4,9 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
-const session = require('express-session');
 
 const app = express();
 app.use(express.json());
-
-// Session configuration for OAuth
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'loyverse-whatsapp-bot-secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
-}));
 
 // Environment variables
 const {
@@ -40,7 +31,7 @@ const LOYVERSE_TOKEN_URL = 'https://developer.loyverse.com/oauth/token';
 const LOYVERSE_API_BASE_URL = 'https://api.loyverse.com/v1.0';
 
 // WhatsApp API configuration
-const WHATSAPP_BASE_URL = `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+const WHATSAPP_BASE_URL = `https://graph.facebook.com/v19.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 const WHATSAPP_HEADERS = {
   'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
   'Content-Type': 'application/json'
@@ -58,14 +49,21 @@ const ADMIN_COMMANDS = {
   STATUS: 'status'
 };
 
+// Global variable to track authentication status
+let isAuthenticated = false;
+let authenticationError = null;
+
 /**
  * Load OAuth tokens from file
  */
 async function loadTokens() {
   try {
     const data = await fs.readFile(TOKEN_FILE, 'utf8');
-    return JSON.parse(data);
+    const tokens = JSON.parse(data);
+    console.log('✅ OAuth tokens loaded from file');
+    return tokens;
   } catch (error) {
+    console.log('📭 No OAuth tokens file found');
     return null;
   }
 }
@@ -76,7 +74,7 @@ async function loadTokens() {
 async function saveTokens(tokens) {
   try {
     await fs.writeFile(TOKEN_FILE, JSON.stringify(tokens, null, 2));
-    console.log('✅ OAuth tokens saved');
+    console.log('✅ OAuth tokens saved to file');
     return true;
   } catch (error) {
     console.error('❌ Error saving tokens:', error.message);
@@ -91,17 +89,30 @@ async function getValidAccessToken() {
   const tokens = await loadTokens();
   
   if (!tokens) {
-    throw new Error('No OAuth tokens found. Please authenticate first.');
+    authenticationError = 'No OAuth tokens found. Please add loyverse_tokens.json file.';
+    isAuthenticated = false;
+    throw new Error(authenticationError);
   }
   
   // Check if token is expired (with 5 minute buffer)
   const isExpired = Date.now() >= (tokens.created_at + tokens.expires_in * 1000 - 300000);
   
   if (isExpired) {
-    console.log('🔄 Access token expired, refreshing...');
-    return await refreshAccessToken(tokens.refresh_token);
+    console.log('🔄 Access token expired, attempting refresh...');
+    try {
+      const newAccessToken = await refreshAccessToken(tokens.refresh_token);
+      isAuthenticated = true;
+      authenticationError = null;
+      return newAccessToken;
+    } catch (error) {
+      authenticationError = 'Token refresh failed. Please update tokens.';
+      isAuthenticated = false;
+      throw error;
+    }
   }
   
+  isAuthenticated = true;
+  authenticationError = null;
   return tokens.access_token;
 }
 
@@ -110,6 +121,7 @@ async function getValidAccessToken() {
  */
 async function refreshAccessToken(refreshToken) {
   try {
+    console.log('🔄 Refreshing access token...');
     const response = await axios.post(LOYVERSE_TOKEN_URL, null, {
       params: {
         client_id: APP_ID,
@@ -128,11 +140,11 @@ async function refreshAccessToken(refreshToken) {
     };
     
     await saveTokens(newTokens);
-    console.log('✅ Access token refreshed');
+    console.log('✅ Access token refreshed successfully');
     return newTokens.access_token;
   } catch (error) {
     console.error('❌ Error refreshing token:', error.response?.data || error.message);
-    throw new Error('Failed to refresh access token. Please re-authenticate.');
+    throw new Error('Failed to refresh access token. Please update tokens manually.');
   }
 }
 
@@ -155,12 +167,28 @@ async function makeLoyverseRequest(endpoint, params = {}) {
   } catch (error) {
     console.error('❌ Loyverse API error:', error.response?.data || error.message);
     
-    // If unauthorized, trigger re-authentication
+    // Update authentication status
     if (error.response?.status === 401) {
-      throw new Error('Authentication required. Please re-authenticate with Loyverse.');
+      authenticationError = 'Authentication failed. Please check your tokens.';
+      isAuthenticated = false;
     }
     
     throw error;
+  }
+}
+
+/**
+ * Test Loyverse connection
+ */
+async function testLoyverseConnection() {
+  try {
+    console.log('🔗 Testing Loyverse connection...');
+    const data = await makeLoyverseRequest('/receipts', { limit: 1 });
+    console.log('✅ Loyverse connection successful');
+    return true;
+  } catch (error) {
+    console.error('❌ Loyverse connection test failed:', error.message);
+    return false;
   }
 }
 
@@ -236,44 +264,26 @@ async function saveCustomerRating(ratingData) {
   return await saveJSONFile(RATINGS_FILE, ratings);
 }
 
-/**
- * Fetch recent receipts from Loyverse API
- */
+// ====== FETCH RECENT RECEIPTS ======
 async function fetchRecentReceipts() {
   try {
-    // Get receipts from last 5 minutes to ensure we catch new ones
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    
-    const data = await makeLoyverseRequest('/receipts', {
-      limit: 10,
-      sort_by: 'created_at',
-      order: 'DESC',
-      created_at_min: fiveMinutesAgo
-    });
-    
-    return data.receipts || [];
-  } catch (error) {
-    console.error('❌ Error fetching Loyverse receipts:', error.message);
-    return [];
-  }
-}
+    // Get receipts from last 15 minutes to avoid missing slow syncs
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const query = `?limit=10&sort_by=created_at&order=DESC&created_at_min=${encodeURIComponent(fifteenMinutesAgo)}`;
 
-/**
- * Fetch receipts for a specific time period
- */
-async function fetchReceiptsByPeriod(startDate, endDate) {
-  try {
-    const data = await makeLoyverseRequest('/receipts', {
-      limit: 50,
-      sort_by: 'created_at',
-      order: 'DESC',
-      created_at_min: startDate,
-      created_at_max: endDate
-    });
-    
-    return data.receipts || [];
+    console.log(`🔍 Checking for receipts created since ${fifteenMinutesAgo}`);
+
+    const data = await makeLoyverseRequest(`/receipts${query}`);
+
+    if (!data.receipts || data.receipts.length === 0) {
+      console.log("📭 No recent receipts found.");
+      return [];
+    }
+
+    console.log(`🧾 Found ${data.receipts.length} recent receipt(s).`);
+    return data.receipts;
   } catch (error) {
-    console.error('❌ Error fetching period receipts:', error.message);
+    console.error("❌ Error fetching Loyverse receipts:", error.message);
     return [];
   }
 }
@@ -498,12 +508,23 @@ async function getSystemStatus() {
   const salesData = await loadSalesData();
   const ratingsData = await loadCustomerRatings();
   
-  const isAuthenticated = tokens && Date.now() < (tokens.created_at + tokens.expires_in * 1000 - 300000);
+  let authStatus = '❌ Not Connected';
+  let authDetails = authenticationError || 'No tokens found';
+  
+  if (isAuthenticated) {
+    authStatus = '✅ Connected';
+    authDetails = 'Automatic token refresh enabled';
+  } else if (tokens) {
+    authStatus = '⚠️ Token Expired';
+    authDetails = authenticationError || 'Tokens need refresh';
+  }
+  
   const totalSales = salesData.sales.length;
   const totalRatings = ratingsData.total;
   
   return `🤖 System Status Report\n\n` +
-         `🔐 Authentication: ${isAuthenticated ? '✅ Connected' : '❌ Not Connected'}\n` +
+         `🔐 Authentication: ${authStatus}\n` +
+         `📝 Details: ${authDetails}\n` +
          `📊 Total Sales Tracked: ${totalSales}\n` +
          `⭐ Customer Ratings: ${totalRatings}\n` +
          `📈 Average Rating: ${ratingsData.average.toFixed(1)}/5\n` +
@@ -511,25 +532,43 @@ async function getSystemStatus() {
          `Use 'help' to see all available commands.`;
 }
 
-/**
- * Send WhatsApp message using interactive buttons
- */
-async function sendWhatsAppMessage(phoneNumber, messageData) {
+// ====== SEND WHATSAPP MESSAGE (improved error handling) ======
+async function sendWhatsAppMessage(to, messageBody, footer = "Thank you for your purchase!") {
   try {
-    const messagePayload = {
-      messaging_product: 'whatsapp',
-      to: phoneNumber,
-      ...messageData
+    // Trim or truncate footer to meet Meta limits (0–60 chars)
+    if (footer.length > 60) footer = footer.substring(0, 57) + "...";
+
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: `${messageBody}\n\n${footer}` }
     };
-    
-    const response = await axios.post(WHATSAPP_BASE_URL, messagePayload, {
-      headers: WHATSAPP_HEADERS
-    });
-    
-    console.log('✅ WhatsApp message sent to:', phoneNumber);
-    return { success: true, messageId: response.data.messages?.[0]?.id };
+
+    const response = await axios.post(
+      WHATSAPP_BASE_URL,
+      payload,
+      {
+        headers: WHATSAPP_HEADERS
+      }
+    );
+
+    console.log(`✅ WhatsApp message sent to: ${to}`);
+    return { success: true, data: response.data };
   } catch (error) {
-    console.error('❌ Error sending WhatsApp message:', error.response?.data || error.message);
+    if (error.response && error.response.data) {
+      console.error("❌ Error sending WhatsApp message:", JSON.stringify(error.response.data, null, 2));
+
+      // Handle common WhatsApp errors
+      const err = error.response.data.error;
+      if (err.code === 131009 && err.error_data?.details?.includes("Footer text length")) {
+        console.warn("⚠️ Footer text too long — retrying with shorter text...");
+        return sendWhatsAppMessage(to, messageBody, "Thanks!");
+      }
+    } else {
+      console.error("❌ Unknown WhatsApp error:", error.message);
+    }
+    
     return { success: false, error: error.response?.data || error.message };
   }
 }
@@ -538,12 +577,14 @@ async function sendWhatsAppMessage(phoneNumber, messageData) {
  * Send interactive receipt notification
  */
 async function sendReceiptNotification(phoneNumber, receiptData) {
+  const messageBody = `💰 New Sale Recorded!\n\nItem: ${receiptData.item_name}\nAmount: ${receiptData.amount}\nCustomer: ${receiptData.customer_name}\nTime: ${receiptData.timestamp}\nReceipt: ${receiptData.receipt_id}\n\nWould you like to view the full receipt?`;
+  
   const messagePayload = {
     type: 'interactive',
     interactive: {
       type: 'button',
       body: {
-        text: `💰 New Sale Recorded!\n\nItem: ${receiptData.item_name}\nAmount: ${receiptData.amount}\nCustomer: ${receiptData.customer_name}\nTime: ${receiptData.timestamp}\nReceipt: ${receiptData.receipt_id}\n\nWould you like to view the full receipt?`
+        text: messageBody
       },
       action: {
         buttons: [
@@ -566,7 +607,30 @@ async function sendReceiptNotification(phoneNumber, receiptData) {
     }
   };
   
-  return await sendWhatsAppMessage(phoneNumber, messagePayload);
+  return await sendWhatsAppMessageDirect(phoneNumber, messagePayload);
+}
+
+/**
+ * Direct WhatsApp message for interactive content
+ */
+async function sendWhatsAppMessageDirect(phoneNumber, messageData) {
+  try {
+    const messagePayload = {
+      messaging_product: 'whatsapp',
+      to: phoneNumber,
+      ...messageData
+    };
+    
+    const response = await axios.post(WHATSAPP_BASE_URL, messagePayload, {
+      headers: WHATSAPP_HEADERS
+    });
+    
+    console.log('✅ WhatsApp interactive message sent to:', phoneNumber);
+    return { success: true, messageId: response.data.messages?.[0]?.id };
+  } catch (error) {
+    console.error('❌ Error sending WhatsApp interactive message:', error.response?.data || error.message);
+    return { success: false, error: error.response?.data || error.message };
+  }
 }
 
 /**
@@ -618,7 +682,7 @@ async function sendThankYouResponse(phoneNumber, customerName) {
     }
   };
   
-  return await sendWhatsAppMessage(phoneNumber, messagePayload);
+  return await sendWhatsAppMessageDirect(phoneNumber, messagePayload);
 }
 
 /**
@@ -633,12 +697,7 @@ async function sendRatingConfirmation(phoneNumber, rating) {
   
   const message = thankYouMessages[rating] || `Thank you for your ${rating}-star rating! We appreciate your feedback!`;
   
-  const messagePayload = {
-    type: 'text',
-    text: { body: message }
-  };
-  
-  return await sendWhatsAppMessage(phoneNumber, messagePayload);
+  return await sendWhatsAppMessage(phoneNumber, message, "We value your feedback!");
 }
 
 /**
@@ -676,7 +735,7 @@ async function sendAdminHelp(phoneNumber) {
     }
   };
   
-  return await sendWhatsAppMessage(phoneNumber, messagePayload);
+  return await sendWhatsAppMessageDirect(phoneNumber, messagePayload);
 }
 
 /**
@@ -720,17 +779,11 @@ async function handleAdminCommand(phoneNumber, messageText) {
     }
     
     // Send the report as a text message
-    await sendWhatsAppMessage(phoneNumber, {
-      type: 'text',
-      text: { body: report }
-    });
+    await sendWhatsAppMessage(phoneNumber, report, "Generated report");
     
   } catch (error) {
     console.error('❌ Error handling admin command:', error);
-    await sendWhatsAppMessage(phoneNumber, {
-      type: 'text',
-      text: { body: '❌ Error generating report. Please try again.' }
-    });
+    await sendWhatsAppMessage(phoneNumber, '❌ Error generating report. Please try again.', "Error");
   }
 }
 
@@ -749,7 +802,10 @@ async function checkForNewSales() {
   
   try {
     // Check if we have valid authentication
-    await getValidAccessToken();
+    if (!isAuthenticated) {
+      console.log('⏸️ Skipping sales check - not authenticated');
+      return;
+    }
     
     const lastReceipt = await loadLastReceipt();
     const lastReceiptId = lastReceipt?.id;
@@ -801,106 +857,8 @@ async function checkForNewSales() {
     
   } catch (error) {
     console.error('❌ Error in sales check:', error.message);
-    
-    // If authentication error, send alert to admin
-    if (error.message.includes('Authentication required') || error.message.includes('No OAuth tokens')) {
-      await sendWhatsAppMessage(FALLBACK_BUSINESS_PHONE, {
-        type: 'text',
-        text: { body: `🔐 Authentication Alert:\n\n${error.message}\n\nPlease visit your bot URL to re-authenticate with Loyverse.` }
-      });
-    }
   }
 }
-
-/**
- * OAuth Routes
- */
-
-// Initiate OAuth flow
-app.get('/auth', (req, res) => {
-  const authUrl = `${LOYVERSE_AUTH_URL}?client_id=${APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=read:receipts`;
-  res.redirect(authUrl);
-});
-
-// OAuth callback handler
-app.get('/callback', async (req, res) => {
-  const { code, error } = req.query;
-  
-  if (error) {
-    return res.status(400).send(`OAuth Error: ${error}`);
-  }
-  
-  if (!code) {
-    return res.status(400).send('No authorization code received');
-  }
-  
-  try {
-    // Exchange authorization code for access token
-    const response = await axios.post(LOYVERSE_TOKEN_URL, null, {
-      params: {
-        client_id: APP_ID,
-        client_secret: APP_SECRET,
-        code: code,
-        grant_type: 'authorization_code',
-        redirect_uri: REDIRECT_URI
-      },
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
-    
-    const tokens = {
-      ...response.data,
-      created_at: Date.now()
-    };
-    
-    await saveTokens(tokens);
-    
-    // Send success notification to admin
-    await sendWhatsAppMessage(FALLBACK_BUSINESS_PHONE, {
-      type: 'text',
-      text: { body: '✅ Successfully connected to Loyverse!\n\nYour sales notifications are now active. You will receive WhatsApp messages for new sales.' }
-    });
-    
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Loyverse Connection Successful</title>
-        <style>
-          body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-          .success { color: #22c55e; font-size: 24px; }
-          .message { margin: 20px 0; }
-        </style>
-      </head>
-      <body>
-        <div class="success">✅ Connection Successful!</div>
-        <div class="message">Your Loyverse account has been successfully connected.</div>
-        <div>You can now close this window and return to WhatsApp.</div>
-      </body>
-      </html>
-    `);
-    
-  } catch (error) {
-    console.error('❌ OAuth callback error:', error.response?.data || error.message);
-    res.status(500).send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Connection Failed</title>
-        <style>
-          body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-          .error { color: #ef4444; font-size: 24px; }
-        </style>
-      </head>
-      <body>
-        <div class="error">❌ Connection Failed</div>
-        <div>Please try again or contact support.</div>
-      </body>
-      </html>
-    `);
-  }
-});
 
 /**
  * Webhook endpoint for WhatsApp messages
@@ -940,36 +898,21 @@ app.post('/webhook', async (req, res) => {
         await sendRatingConfirmation(from, rating);
       } else if (buttonId === 'view_receipt') {
         // Send receipt details
-        await sendWhatsAppMessage(from, {
-          type: 'text',
-          text: { body: '📄 Full receipt details are available in your Loyverse dashboard. Thank you for your business! 🛍️' }
-        });
+        await sendWhatsAppMessage(from, '📄 Full receipt details are available in your Loyverse dashboard. Thank you for your business! 🛍️', 'Receipt Details');
       } else if (buttonId.startsWith('report_')) {
         // Handle admin report buttons
         const reportType = buttonId.replace('report_', '');
         const report = await generateSalesReport(reportType);
-        await sendWhatsAppMessage(from, {
-          type: 'text',
-          text: { body: report }
-        });
+        await sendWhatsAppMessage(from, report, 'Generated Report');
       } else if (buttonId === 'top_items') {
         const report = await getTopItemsReport();
-        await sendWhatsAppMessage(from, {
-          type: 'text',
-          text: { body: report }
-        });
+        await sendWhatsAppMessage(from, report, 'Top Items Report');
       } else if (buttonId === 'ratings_report') {
         const report = await getRatingsReport();
-        await sendWhatsAppMessage(from, {
-          type: 'text',
-          text: { body: report }
-        });
+        await sendWhatsAppMessage(from, report, 'Ratings Report');
       } else if (buttonId === 'system_status') {
         const report = await getSystemStatus();
-        await sendWhatsAppMessage(from, {
-          type: 'text',
-          text: { body: report }
-        });
+        await sendWhatsAppMessage(from, report, 'System Status');
       }
     }
     
@@ -1026,27 +969,27 @@ app.get('/test', async (req, res) => {
 /**
  * Health check endpoint
  */
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  const tokens = await loadTokens();
+  
   res.json({
     status: '✅ Loyverse-WhatsApp Bot Running',
     timestamp: new Date().toISOString(),
     authentication: {
-      required: true,
-      endpoint: '/auth',
-      callback: '/callback'
+      status: isAuthenticated ? '✅ Connected' : (tokens ? '⚠️ Needs Refresh' : '❌ Not Connected'),
+      details: authenticationError || (isAuthenticated ? 'Automatic mode active' : 'Add loyverse_tokens.json file'),
+      automatic: true
     },
     features: [
-      'OAuth 2.0 authentication',
-      'Automatic sales notifications',
-      'Admin reports (today, week, month, yesterday)',
-      'Top items analytics',
-      'Customer rating system',
-      'Interactive WhatsApp messages'
+      '15-minute receipt window',
+      'Enhanced error handling',
+      'Automatic token management',
+      'Sales notifications',
+      'Admin reports',
+      'Customer rating system'
     ],
     endpoints: {
       'GET /': 'Health check',
-      'GET /auth': 'Start OAuth flow',
-      'GET /callback': 'OAuth callback',
       'GET /test': 'Send test WhatsApp message',
       'POST /webhook': 'WhatsApp webhook',
       'POST /check-sales': 'Manual sales check'
@@ -1057,12 +1000,13 @@ app.get('/', (req, res) => {
 /**
  * Manual trigger for sales check
  */
-app.post('/check-sales', async (req, res) => {
+app.post('/check-sales', async (req, res) {
   try {
     await checkForNewSales();
     res.json({ 
       success: true, 
-      message: 'Sales check completed manually' 
+      message: 'Sales check completed manually',
+      authenticated: isAuthenticated
     });
   } catch (error) {
     console.error('❌ Manual check error:', error.message);
@@ -1076,8 +1020,12 @@ app.post('/check-sales', async (req, res) => {
 
 // Start scheduled job to check for new sales every minute
 cron.schedule('* * * * *', () => {
-  console.log('⏰ Running scheduled sales check...');
-  checkForNewSales();
+  if (isAuthenticated) {
+    console.log('⏰ Running scheduled sales check...');
+    checkForNewSales();
+  } else {
+    console.log('⏸️ Skipping sales check - authentication required');
+  }
 });
 
 // Initialize and start the server
@@ -1088,22 +1036,36 @@ async function initialize() {
     await loadSalesData() || await saveSalesData({ sales: [], dailyTotals: {} });
     await loadCustomerRatings() || await saveJSONFile(RATINGS_FILE, { ratings: [], average: 0, total: 0 });
     
+    // Test authentication on startup
+    console.log('🔐 Testing authentication...');
+    const tokens = await loadTokens();
+    
+    if (tokens) {
+      console.log('✅ Tokens file found, testing connection...');
+      const connectionTest = await testLoyverseConnection();
+      if (connectionTest) {
+        console.log('🎉 Automatic authentication successful!');
+      } else {
+        console.log('⚠️ Tokens found but connection failed');
+      }
+    } else {
+      console.log('📭 No tokens file found. Please add loyverse_tokens.json');
+    }
+    
     // Start server
     app.listen(PORT, () => {
       console.log('🚀 Enhanced Loyverse-WhatsApp Bot Started');
       console.log('📊 Server running on port:', PORT);
       console.log('👑 Admin phone:', FALLBACK_BUSINESS_PHONE);
-      console.log('🔐 OAuth Required: Visit /auth to authenticate');
-      console.log('⏰ Features: OAuth + Sales notifications + Admin reports + Customer ratings');
+      console.log('🔐 Authentication:', isAuthenticated ? '✅ Automatic' : '❌ Manual Setup Required');
+      console.log('⏰ Features: 15-min window + Auto-token refresh + Enhanced error handling');
       
-      // Check authentication status
-      loadTokens().then(tokens => {
-        if (tokens) {
-          console.log('✅ Loyverse tokens found');
-        } else {
-          console.log('⚠️ No Loyverse tokens - authentication required');
-        }
-      });
+      if (!isAuthenticated) {
+        console.log('\n📋 SETUP REQUIRED:');
+        console.log('1. Create loyverse_tokens.json file with your tokens');
+        console.log('2. Redeploy the application');
+        console.log('3. Send "status" to your admin WhatsApp to verify');
+      }
     });
   } catch (error) {
     console.error('❌ Failed to initialize server:', error.message);
