@@ -1000,7 +1000,7 @@ app.get('/', async (req, res) => {
 /**
  * Manual trigger for sales check
  */
-app.post('/check-sales', async (req, res) {
+app.post('/check-sales', async (req, res) => {
   try {
     await checkForNewSales();
     res.json({ 
