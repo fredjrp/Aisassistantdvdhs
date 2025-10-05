@@ -183,11 +183,15 @@ async function makeLoyverseRequest(endpoint, params = {}) {
 async function testLoyverseConnection() {
   try {
     console.log('🔗 Testing Loyverse connection...');
-    const data = await makeLoyverseRequest('/receipts', { limit: 1 });
-    console.log('✅ Loyverse connection successful');
+    const data = await makeLoyverseRequest('/receipts', { limit: 5 });
+    console.log('✅ Loyverse connection successful - Receipt access confirmed');
+    console.log(`📊 Sample receipts:`, data.receipts?.map(r => r.receipt_number));
     return true;
   } catch (error) {
     console.error('❌ Loyverse connection test failed:', error.message);
+    if (error.response?.status === 403) {
+      console.error('🔐 Permission denied - check OAuth scopes');
+    }
     return false;
   }
 }
@@ -264,48 +268,75 @@ async function saveCustomerRating(ratingData) {
   return await saveJSONFile(RATINGS_FILE, ratings);
 }
 
-// ====== UPDATED FETCH RECEIPTS FUNCTION ======
+// ====== IMPROVED FETCH RECEIPTS FUNCTION ======
 async function fetchRecentReceipts() {
   try {
     const lastReceipt = await loadLastReceipt();
     
-    // If we have a last receipt, only get receipts after it
-    // Otherwise, get receipts from the last 24 hours
     let queryParams = {
-      limit: 50,
+      limit: 100, // Increased limit
       sort_by: 'created_at',
-      order: 'ASC' // Get oldest first to process in order
+      order: 'DESC' // Get newest first
     };
 
+    console.log('📋 Last processed receipt:', lastReceipt);
+
     if (lastReceipt && lastReceipt.id) {
-      // Get receipts created after the last processed receipt
-      console.log(`🔍 Looking for receipts after ID: ${lastReceipt.id}`);
-      queryParams.created_at_min = lastReceipt.created_at;
+      // Use created_at_min with a buffer to ensure we don't miss receipts
+      const lastReceiptTime = new Date(lastReceipt.created_at);
+      // Go back 5 minutes to catch any receipts that might have been created around the same time
+      const bufferTime = new Date(lastReceiptTime.getTime() - 5 * 60 * 1000).toISOString();
+      queryParams.created_at_min = bufferTime;
+      console.log(`🔍 Looking for receipts after: ${bufferTime} (with buffer)`);
     } else {
-      // First run - get receipts from last 24 hours
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      queryParams.created_at_min = twentyFourHoursAgo;
-      console.log(`🔍 First run - getting receipts since: ${twentyFourHoursAgo}`);
+      // First run - get receipts from last 1 hour instead of 24
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      queryParams.created_at_min = oneHourAgo;
+      console.log(`🔍 First run - getting receipts since: ${oneHourAgo}`);
     }
 
-    console.log('📋 Fetching receipts with params:', queryParams);
+    console.log('📋 Fetching receipts with params:', JSON.stringify(queryParams, null, 2));
+    
     const data = await makeLoyverseRequest('/receipts', queryParams);
 
+    console.log('📦 Raw API response:', {
+      receiptCount: data.receipts?.length || 0,
+      receipts: data.receipts?.map(r => ({
+        id: r.id,
+        receipt_number: r.receipt_number,
+        created_at: r.created_at,
+        total: r.total_money?.amount
+      }))
+    });
+
     if (!data.receipts || data.receipts.length === 0) {
-      console.log("📭 No new receipts found.");
+      console.log("📭 No receipts found in API response");
       return [];
     }
 
-    console.log(`🧾 Found ${data.receipts.length} receipt(s).`);
+    // Filter out the last processed receipt if it's in the results
+    let newReceipts = data.receipts;
+    if (lastReceipt && lastReceipt.id) {
+      newReceipts = data.receipts.filter(receipt => 
+        receipt.id !== lastReceipt.id && 
+        new Date(receipt.created_at) > new Date(lastReceipt.created_at)
+      );
+      console.log(`🔄 Filtered ${data.receipts.length - newReceipts.length} already processed receipts`);
+    }
+
+    console.log(`🧾 Found ${newReceipts.length} new receipt(s) to process`);
     
-    // Sort by creation date (newest first for processing)
-    const sortedReceipts = data.receipts.sort((a, b) => 
-      new Date(b.created_at) - new Date(a.created_at)
+    // Sort by creation date (oldest first for processing)
+    const sortedReceipts = newReceipts.sort((a, b) => 
+      new Date(a.created_at) - new Date(b.created_at)
     );
     
     return sortedReceipts;
   } catch (error) {
     console.error("❌ Error fetching Loyverse receipts:", error.message);
+    if (error.response) {
+      console.error("📡 API Response:", error.response.data);
+    }
     return [];
   }
 }
@@ -562,7 +593,9 @@ async function getSystemStatus() {
          `Use 'help' to see all available commands.`;
 }
 
-// ====== SEND WHATSAPP MESSAGE (improved error handling) ======
+/**
+ * Send WhatsApp message (improved error handling)
+ */
 async function sendWhatsAppMessage(to, messageBody, footer = "Thank you for your purchase!") {
   try {
     // Trim or truncate footer to meet Meta limits (0–60 chars)
@@ -977,6 +1010,46 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
+ * Debug endpoint to check receipts in real-time
+ */
+app.get('/debug-receipts', async (req, res) => {
+  try {
+    const lastReceipt = await loadLastReceipt();
+    const queryParams = {
+      limit: 50,
+      sort_by: 'created_at',
+      order: 'DESC'
+    };
+
+    if (lastReceipt && lastReceipt.id) {
+      queryParams.created_at_min = lastReceipt.created_at;
+    }
+
+    const data = await makeLoyverseRequest('/receipts', queryParams);
+    
+    res.json({
+      lastReceipt,
+      queryParams,
+      foundReceipts: data.receipts?.length || 0,
+      receipts: data.receipts?.map(r => ({
+        id: r.id,
+        receipt_number: r.receipt_number,
+        created_at: r.created_at,
+        total: r.total_money?.amount,
+        customer: r.customer?.name
+      })),
+      isAuthenticated,
+      authenticationError
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
+/**
  * Test endpoint to manually trigger a WhatsApp message
  */
 app.get('/test', async (req, res) => {
@@ -1031,15 +1104,17 @@ app.get('/', async (req, res) => {
       automatic: true
     },
     features: [
-      '24-hour receipt window',
+      'Enhanced receipt detection',
       'Send to both customer and admin',
       'Automatic token management',
       'Sales notifications',
       'Admin reports',
-      'Customer rating system'
+      'Customer rating system',
+      'Debug endpoints'
     ],
     endpoints: {
       'GET /': 'Health check',
+      'GET /debug-receipts': 'Debug receipts in real-time',
       'GET /test': 'Send test WhatsApp message',
       'POST /webhook': 'WhatsApp webhook',
       'POST /check-sales': 'Manual sales check'
@@ -1108,7 +1183,8 @@ async function initialize() {
       console.log('📊 Server running on port:', PORT);
       console.log('👑 Admin phone:', FALLBACK_BUSINESS_PHONE);
       console.log('🔐 Authentication:', isAuthenticated ? '✅ Automatic' : '❌ Manual Setup Required');
-      console.log('⏰ Features: 24-hour window + Dual notifications + Auto-token refresh');
+      console.log('⏰ Features: Enhanced receipt detection + Dual notifications + Auto-token refresh');
+      console.log('🐛 Debug: Visit /debug-receipts to check receipts in real-time');
       
       if (!isAuthenticated) {
         console.log('\n📋 SETUP REQUIRED:');
