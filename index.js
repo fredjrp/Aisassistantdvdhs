@@ -264,24 +264,46 @@ async function saveCustomerRating(ratingData) {
   return await saveJSONFile(RATINGS_FILE, ratings);
 }
 
-// ====== FETCH RECENT RECEIPTS ======
+// ====== UPDATED FETCH RECEIPTS FUNCTION ======
 async function fetchRecentReceipts() {
   try {
-    // Get receipts from last 15 minutes to avoid missing slow syncs
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const query = `?limit=10&sort_by=created_at&order=DESC&created_at_min=${encodeURIComponent(fifteenMinutesAgo)}`;
+    const lastReceipt = await loadLastReceipt();
+    
+    // If we have a last receipt, only get receipts after it
+    // Otherwise, get receipts from the last 24 hours
+    let queryParams = {
+      limit: 50,
+      sort_by: 'created_at',
+      order: 'ASC' // Get oldest first to process in order
+    };
 
-    console.log(`🔍 Checking for receipts created since ${fifteenMinutesAgo}`);
+    if (lastReceipt && lastReceipt.id) {
+      // Get receipts created after the last processed receipt
+      console.log(`🔍 Looking for receipts after ID: ${lastReceipt.id}`);
+      queryParams.created_at_min = lastReceipt.created_at;
+    } else {
+      // First run - get receipts from last 24 hours
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      queryParams.created_at_min = twentyFourHoursAgo;
+      console.log(`🔍 First run - getting receipts since: ${twentyFourHoursAgo}`);
+    }
 
-    const data = await makeLoyverseRequest(`/receipts${query}`);
+    console.log('📋 Fetching receipts with params:', queryParams);
+    const data = await makeLoyverseRequest('/receipts', queryParams);
 
     if (!data.receipts || data.receipts.length === 0) {
-      console.log("📭 No recent receipts found.");
+      console.log("📭 No new receipts found.");
       return [];
     }
 
-    console.log(`🧾 Found ${data.receipts.length} recent receipt(s).`);
-    return data.receipts;
+    console.log(`🧾 Found ${data.receipts.length} receipt(s).`);
+    
+    // Sort by creation date (newest first for processing)
+    const sortedReceipts = data.receipts.sort((a, b) => 
+      new Date(b.created_at) - new Date(a.created_at)
+    );
+    
+    return sortedReceipts;
   } catch (error) {
     console.error("❌ Error fetching Loyverse receipts:", error.message);
     return [];
@@ -295,11 +317,13 @@ function extractCustomerPhone(receipt) {
   const customer = receipt.customer;
   if (!customer) return null;
   
-  const phone = customer.phone || customer.contact_phone || customer.mobile;
+  // Try different phone field names
+  const phone = customer.phone || customer.contact_phone || customer.mobile || customer.phone_number;
   if (!phone) return null;
   
   let formattedPhone = phone.toString().replace(/\D/g, '');
   
+  // Handle Kenyan phone numbers
   if (formattedPhone.startsWith('0')) {
     formattedPhone = '254' + formattedPhone.substring(1);
   }
@@ -308,10 +332,16 @@ function extractCustomerPhone(receipt) {
     formattedPhone = '254' + formattedPhone;
   }
   
-  if (formattedPhone.length >= 10 && formattedPhone.length <= 15) {
+  // Handle international numbers without country code
+  if (formattedPhone.length === 9 && !formattedPhone.startsWith('254')) {
+    formattedPhone = '254' + formattedPhone;
+  }
+  
+  if (formattedPhone.length >= 9 && formattedPhone.length <= 15) {
     return formattedPhone;
   }
   
+  console.log(`📞 Invalid phone format: ${phone} -> ${formattedPhone}`);
   return null;
 }
 
@@ -574,11 +604,29 @@ async function sendWhatsAppMessage(to, messageBody, footer = "Thank you for your
 }
 
 /**
- * Send interactive receipt notification
+ * Send receipt notification to customer AND admin
  */
-async function sendReceiptNotification(phoneNumber, receiptData) {
-  const messageBody = `💰 New Sale Recorded!\n\nItem: ${receiptData.item_name}\nAmount: ${receiptData.amount}\nCustomer: ${receiptData.customer_name}\nTime: ${receiptData.timestamp}\nReceipt: ${receiptData.receipt_id}\n\nWould you like to view the full receipt?`;
+async function sendReceiptNotification(phoneNumber, receiptData, isCustomer = true) {
+  let messageBody;
   
+  if (isCustomer) {
+    messageBody = `🛍️ Thank you for your purchase!\n\n` +
+                 `📄 Receipt: ${receiptData.receipt_id}\n` +
+                 `👤 Customer: ${receiptData.customer_name}\n` +
+                 `📦 Items: ${receiptData.item_name}\n` +
+                 `💰 Total: ${receiptData.amount}\n` +
+                 `⏰ Date: ${receiptData.timestamp}\n\n` +
+                 `We appreciate your business! 💫`;
+  } else {
+    messageBody = `💰 NEW SALE ALERT!\n\n` +
+                 `📄 Receipt: ${receiptData.receipt_id}\n` +
+                 `👤 Customer: ${receiptData.customer_name}\n` +
+                 `📦 Items: ${receiptData.item_name}\n` +
+                 `💰 Total: ${receiptData.amount}\n` +
+                 `⏰ Date: ${receiptData.timestamp}\n\n` +
+                 `Sale recorded successfully! 🎉`;
+  }
+
   const messagePayload = {
     type: 'interactive',
     interactive: {
@@ -592,14 +640,14 @@ async function sendReceiptNotification(phoneNumber, receiptData) {
             type: 'reply',
             reply: {
               id: 'view_receipt',
-              title: 'View Receipt'
+              title: '📋 View Details'
             }
           },
           {
             type: 'reply',
             reply: {
-              id: 'thank_you',
-              title: 'Send Thank You'
+              id: isCustomer ? 'thank_you' : 'view_report',
+              title: isCustomer ? '🙏 Thank You' : '📊 Report'
             }
           }
         ]
@@ -807,53 +855,48 @@ async function checkForNewSales() {
       return;
     }
     
-    const lastReceipt = await loadLastReceipt();
-    const lastReceiptId = lastReceipt?.id;
-    
     const receipts = await fetchRecentReceipts();
     
     if (receipts.length === 0) {
-      console.log('📭 No recent receipts found');
+      console.log('📭 No new receipts found');
       return;
     }
-    
-    receipts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     
     let newReceiptsFound = 0;
     
     for (const receipt of receipts) {
-      if (receipt.id === lastReceiptId) {
-        break;
-      }
-      
-      console.log('🆕 New receipt found:', receipt.id);
+      console.log('🆕 Processing receipt:', receipt.id);
       newReceiptsFound++;
       
       // Store sales data for reporting
       await storeSalesData(receipt);
       
       const customerPhone = extractCustomerPhone(receipt);
-      const recipientPhone = customerPhone || FALLBACK_BUSINESS_PHONE;
+      const receiptData = formatReceiptData(receipt);
       
-      if (!recipientPhone) {
-        console.log('⚠️ No recipient phone found for receipt:', receipt.id);
-        continue;
+      // Send notification to customer if phone available
+      if (customerPhone) {
+        console.log(`📨 Sending receipt to customer: ${customerPhone}`);
+        await sendReceiptNotification(customerPhone, receiptData, true);
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      const receiptData = formatReceiptData(receipt);
-      await sendReceiptNotification(recipientPhone, receiptData);
-      
-      console.log(`📨 Notification sent to: ${recipientPhone} (${customerPhone ? 'Customer' : 'Business'})`);
-      
+      // Always send notification to admin
+      console.log(`📨 Sending receipt to admin: ${FALLBACK_BUSINESS_PHONE}`);
+      await sendReceiptNotification(FALLBACK_BUSINESS_PHONE, receiptData, false);
       await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Update last receipt
+      await saveLastReceipt({
+        id: receipt.id,
+        created_at: receipt.created_at,
+        timestamp: new Date().toISOString()
+      });
+      
+      console.log(`✅ Processed receipt ${receipt.id} - Customer: ${customerPhone ? 'Yes' : 'No'}, Admin: Yes`);
     }
     
-    if (newReceiptsFound > 0 && receipts.length > 0) {
-      await saveLastReceipt(receipts[0]);
-      console.log(`🎉 Processed ${newReceiptsFound} new receipt(s)`);
-    } else {
-      console.log('✅ No new receipts to process');
-    }
+    console.log(`🎉 Successfully processed ${newReceiptsFound} new receipt(s)`);
     
   } catch (error) {
     console.error('❌ Error in sales check:', error.message);
@@ -899,6 +942,10 @@ app.post('/webhook', async (req, res) => {
       } else if (buttonId === 'view_receipt') {
         // Send receipt details
         await sendWhatsAppMessage(from, '📄 Full receipt details are available in your Loyverse dashboard. Thank you for your business! 🛍️', 'Receipt Details');
+      } else if (buttonId === 'view_report') {
+        // Send quick report to admin
+        const report = await generateSalesReport('today');
+        await sendWhatsAppMessage(from, report, "Today's Report");
       } else if (buttonId.startsWith('report_')) {
         // Handle admin report buttons
         const reportType = buttonId.replace('report_', '');
@@ -942,18 +989,21 @@ app.get('/test', async (req, res) => {
       receipt_id: 'TEST-001'
     };
     
-    const success = await sendReceiptNotification(FALLBACK_BUSINESS_PHONE, testReceiptData);
+    // Send to both admin and simulate customer
+    const adminSuccess = await sendReceiptNotification(FALLBACK_BUSINESS_PHONE, testReceiptData, false);
+    const customerSuccess = await sendReceiptNotification(FALLBACK_BUSINESS_PHONE, testReceiptData, true);
     
-    if (success.success) {
+    if (adminSuccess.success && customerSuccess.success) {
       res.json({ 
         success: true, 
-        message: 'Test WhatsApp message sent successfully',
-        to: FALLBACK_BUSINESS_PHONE
+        message: 'Test WhatsApp messages sent successfully',
+        admin_message: 'New sale alert sent',
+        customer_message: 'Thank you message sent'
       });
     } else {
       res.status(500).json({ 
         success: false, 
-        message: 'Failed to send test message' 
+        message: 'Failed to send test messages' 
       });
     }
   } catch (error) {
@@ -981,8 +1031,8 @@ app.get('/', async (req, res) => {
       automatic: true
     },
     features: [
-      '15-minute receipt window',
-      'Enhanced error handling',
+      '24-hour receipt window',
+      'Send to both customer and admin',
       'Automatic token management',
       'Sales notifications',
       'Admin reports',
@@ -1058,7 +1108,7 @@ async function initialize() {
       console.log('📊 Server running on port:', PORT);
       console.log('👑 Admin phone:', FALLBACK_BUSINESS_PHONE);
       console.log('🔐 Authentication:', isAuthenticated ? '✅ Automatic' : '❌ Manual Setup Required');
-      console.log('⏰ Features: 15-min window + Auto-token refresh + Enhanced error handling');
+      console.log('⏰ Features: 24-hour window + Dual notifications + Auto-token refresh');
       
       if (!isAuthenticated) {
         console.log('\n📋 SETUP REQUIRED:');
